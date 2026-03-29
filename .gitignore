@@ -1,0 +1,9 @@
+# Large build directories
+llvm10/
+working_dir/
+
+# Large binary/cache files
+augmentum-main/driver/config/function_cache.pickle
+
+# SQLite database
+heuristic_data.sqlite

@@ -1,0 +1,4 @@
+type;module;function;path;comment
+BLOCK_REX;;;".+T-f32";"Block float paths"
+ALLOW;llvm/lib/Transforms/Scalar/LoopUnrollPass.cpp;;;
+ALLOW;llvm/lib/Transforms/IPO/Inliner.cpp;;;
