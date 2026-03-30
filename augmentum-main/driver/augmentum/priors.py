@@ -2370,8 +2370,12 @@ class BayesianOptPrior(Prior):
         self._fallback_targets: list = []
         self._fallback_idx = 0
         self._use_fallback = not _SKOPT_AVAILABLE
-        self._pending_value: Optional[Number] = None
-        self._pending_costs: list = []
+        # Accumulates (value, cost) pairs across all iterations; told to the
+        # GP in bulk at the start of prior_result().
+        self._pending_observations: list = []
+        # Tracks the cost(s) reported for the probe currently in flight so
+        # update() can average them before appending to _pending_observations.
+        self._current_probe_costs: list = []
 
     def get_id(self) -> str:
         return self.ID
@@ -2406,7 +2410,12 @@ class BayesianOptPrior(Prior):
                     dimensions=space,
                     base_estimator="GP",
                     acq_func="EI",
-                    n_initial_points=max(5, self.budget // 4),
+                    # Clamp so n_initial_points is always < budget:
+                    # - max(5, budget//4) gives a sensible minimum for random
+                    #   exploration before the GP takes over.
+                    # - min(..., max(1, budget-1)) ensures at least one GP-
+                    #   guided step occurs even when budget is very small.
+                    n_initial_points=min(max(5, self.budget // 4), max(1, self.budget - 1)),
                     random_state=42,
                 )
             except Exception as e:
@@ -2474,18 +2483,6 @@ class BayesianOptPrior(Prior):
         if self.in_null_phase:
             return self.null_prior.select_next_probe()
 
-        # Tell optimizer about previous probe before asking for next
-        if (
-            self._pending_value is not None
-            and not self._use_fallback
-            and self._optimizer is not None
-        ):
-            valid_costs = [c for c in self._pending_costs if c is not None]
-            cost = sum(valid_costs) / len(valid_costs) if valid_costs else 2.0
-            self._optimizer.tell([self._pending_value], cost)
-        self._pending_value = None
-        self._pending_costs = []
-
         if self._use_fallback:
             self.current_value = self._fallback_targets[self._fallback_idx]
             self._fallback_idx += 1
@@ -2497,8 +2494,8 @@ class BayesianOptPrior(Prior):
             else:
                 self.current_value = float(round(raw, REAL_ACCURACY))
 
+        self._current_probe_costs = []
         self.iterations_done += 1
-        self._pending_value = self.current_value
         return StaticProbe(self.function, self.path, self.get_id(), self.current_value)
 
     def update(self, probe_result: ProbeResult):
@@ -2516,11 +2513,25 @@ class BayesianOptPrior(Prior):
                     rel_obj = probe_result.rel_objective
                     if self.best_rel_objective is None or rel_obj < self.best_rel_objective:
                         self.best_rel_objective = rel_obj
-                    self._pending_costs.append(rel_obj)
+                    self._current_probe_costs.append(rel_obj)
                 else:
-                    self._pending_costs.append(None)
+                    self._current_probe_costs.append(None)
+                # Seal this probe's observation so prior_result() can tell()
+                # it to the GP.  Average valid costs; fall back to 1.0
+                # (baseline) when every run failed — 1.0 is the neutral
+                # signal rather than the arbitrarily punitive 2.0.
+                valid = [c for c in self._current_probe_costs if c is not None]
+                cost = sum(valid) / len(valid) if valid else 1.0
+                self._pending_observations.append((self.current_value, cost))
 
     def prior_result(self) -> Optional[PriorResult]:
+        # Tell the GP about every probe result accumulated so far.
+        # select_next_probe() only asks() — it never calls tell() — so all
+        # observations are fed to the optimizer here in one go.
+        if not self._use_fallback and self._optimizer is not None:
+            for value, cost in self._pending_observations:
+                self._optimizer.tell([value], cost)
+            self._pending_observations = []
         if self.in_null_phase and not self.null_prior.is_done():
             return None
         any_success = self.best_rel_objective is not None and self.best_rel_objective < 1.0
