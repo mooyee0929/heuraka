@@ -53,6 +53,8 @@ class Driver:
         record_exec_log: bool = False,
         skip_immutables: bool = False,
         independent_test_cases: bool = False,
+        search_strategy: str = "composite",
+        search_budget: int = 50,
     ):
         self.main_ctx = main_ctx
         self.tools = tools
@@ -91,6 +93,8 @@ class Driver:
 
         self.skip_immutables = skip_immutables
         self.independent_test_cases = independent_test_cases
+        self.search_strategy = search_strategy
+        self.search_budget = search_budget
 
         self.heuristicDB = self.setup_heuristic_dbs(heuristicURL, wd_run)
 
@@ -264,7 +268,7 @@ class Driver:
                 for _, path in paths.items():
                     if counter == 0:
                         break
-                    tasks.append(Task(modules[m_name].functions[fn_name], path))
+                    tasks.append(Task(modules[m_name].functions[fn_name], path, self.search_strategy, self.search_budget))
                     if self.instr_scope == InstrumentationScope.PATH:
                         counter -= 1
                 if self.instr_scope == InstrumentationScope.FUNCTION:

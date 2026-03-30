@@ -23,6 +23,13 @@ from augmentum.benchmarks import ExecutionResult, TestCase
 
 logger = logging.getLogger(__name__)
 
+try:
+    from skopt import Optimizer as _SkoptOptimizer
+    from skopt.space import Integer as _SkoptInteger, Real as _SkoptReal
+    _SKOPT_AVAILABLE = True
+except ImportError:
+    _SKOPT_AVAILABLE = False
+
 REAL_ACCURACY = 2  # digits behind decimal
 REAL_TOLERANCE = 10**-REAL_ACCURACY
 
@@ -2209,5 +2216,327 @@ class RealScalePrior(ScalePrior):
 # -----------------------------------------------------------------------------------------
 
 
-def build_priors(function: Function, path: Path, skip_immutables: bool) -> Prior:
+class _SearchResultEntry:
+    """Lightweight helper to store search results in the prior_results table."""
+
+    def __init__(self, prior_id: str, probed_values: Dict, best_rel_obj: Optional[float]):
+        self._prior_id = prior_id
+        self._probed_values = probed_values
+        self._best_rel_obj = best_rel_obj
+
+    def prior_result(self) -> Optional[PriorResult]:
+        success = self._best_rel_obj is not None and self._best_rel_obj < 1.0
+        values = "#".join([f"{v},{s}" for v, s in self._probed_values.items()])
+        best = f"best_rel_obj:{self._best_rel_obj}"
+        data = f"{best}#{values}" if values else best
+        return PriorResult(self, success, data)
+
+    def __str__(self) -> str:
+        return self._prior_id
+
+
+class RandomSearchPrior(Prior):
+    """
+    Evaluate a path by running NullPrior then randomly sampling up to budget
+    values uniformly from the full parameter space.
+    """
+
+    ID = "Random Search Prior"
+
+    def __init__(self, function: Function, path: Path, skip_immutables: bool, budget: int = 50):
+        super().__init__(function, path)
+        self.skip_immutables = skip_immutables
+        self.budget = budget
+        self.null_prior = NullPrior(function, path)
+        self.in_null_phase = True
+        self._done = False
+        self.search_targets: list = []
+        self.target_idx = 0
+        self.current_value: Optional[Number] = None
+        self.probed_values: Dict[Number, bool] = {}
+        self.best_rel_objective: Optional[float] = None
+
+    def get_id(self) -> str:
+        return self.ID
+
+    def _transition_to_search(self):
+        if isinstance(self.path.type, IntTypeDesc):
+            if self.path.type.bits == 1:
+                self.search_targets = [0, 1]
+            else:
+                min_val, max_val = get_int_limits(self.path.type.bits)
+                int_range = max_val - min_val + 1
+                n = min(self.budget, int_range)
+                self.search_targets = unique_random_integers(min_val, max_val, n) if n > 0 else []
+                for v in [min_val, max_val, 0, -1, 1]:
+                    if min_val <= v <= max_val and v not in self.search_targets:
+                        self.search_targets.append(v)
+        elif isinstance(self.path.type, RealTypeDesc):
+            min_pos, max_pos = get_real_limit(self.path.type.bits)
+            max_neg = -max_pos
+            if max_pos - max_neg == float("inf"):
+                lo, hi = max_pos - sys.float_info.max, max_pos
+            else:
+                lo, hi = max_neg, max_pos
+            self.search_targets = unique_random_reals(lo, hi, self.budget)
+            for v in [max_neg, -1.0, 0.0, 1.0, max_pos]:
+                if v not in self.search_targets:
+                    self.search_targets.append(v)
+        else:
+            logger.warning(f"RandomSearchPrior: unsupported path type {self.path.type}")
+        logger.debug(
+            f"RandomSearchPrior: initialized {len(self.search_targets)} targets for {self.path}"
+        )
+
+    def is_done(self) -> bool:
+        if self.in_null_phase:
+            if not self.null_prior.is_done():
+                return False
+            if self.null_prior.is_invalid():
+                self._done = True
+            elif (
+                self.skip_immutables
+                and not isinstance(self.path, ResultPath)
+                and self.null_prior.mutated_during_call is False
+            ):
+                logger.info(f"RandomSearchPrior: immutable path suspected, skipping {self.path}")
+                self._done = True
+            else:
+                self._transition_to_search()
+                self.in_null_phase = False
+        if self._done:
+            return True
+        return self.target_idx >= len(self.search_targets)
+
+    def is_invalid(self) -> bool:
+        if self.in_null_phase:
+            return self.null_prior.is_invalid()
+        return False
+
+    def select_next_probe(self) -> PriorProbe:
+        if self.in_null_phase:
+            return self.null_prior.select_next_probe()
+        self.current_value = self.search_targets[self.target_idx]
+        self.target_idx += 1
+        return StaticProbe(self.function, self.path, self.get_id(), self.current_value)
+
+    def update(self, probe_result: ProbeResult):
+        super().update(probe_result)
+        if self.in_null_phase:
+            self.null_prior.update(probe_result)
+        else:
+            if self.current_value is not None:
+                success = probe_result.is_exec_success()
+                if self.current_value in self.probed_values:
+                    self.probed_values[self.current_value] &= success
+                else:
+                    self.probed_values[self.current_value] = success
+                if success and probe_result.rel_objective is not None:
+                    if (
+                        self.best_rel_objective is None
+                        or probe_result.rel_objective < self.best_rel_objective
+                    ):
+                        self.best_rel_objective = probe_result.rel_objective
+
+    def prior_result(self) -> Optional[PriorResult]:
+        if self.in_null_phase and not self.null_prior.is_done():
+            return None
+        any_success = self.best_rel_objective is not None and self.best_rel_objective < 1.0
+        result_entry = _SearchResultEntry(self.ID, self.probed_values, self.best_rel_objective)
+        return PriorResult(self, any_success, [self.null_prior, result_entry])
+
+
+class BayesianOptPrior(Prior):
+    """
+    Evaluate a path using Bayesian optimization (Gaussian Process + EI acquisition)
+    after running NullPrior. Requires scikit-optimize; falls back to random search if
+    unavailable.
+    """
+
+    ID = "Bayesian Opt Prior"
+
+    def __init__(self, function: Function, path: Path, skip_immutables: bool, budget: int = 30):
+        super().__init__(function, path)
+        self.skip_immutables = skip_immutables
+        self.budget = budget
+        self.null_prior = NullPrior(function, path)
+        self.in_null_phase = True
+        self._done = False
+        self.iterations_done = 0
+        self.current_value: Optional[Number] = None
+        self.probed_values: Dict[Number, bool] = {}
+        self.best_rel_objective: Optional[float] = None
+        self._optimizer = None
+        self._fallback_targets: list = []
+        self._fallback_idx = 0
+        self._use_fallback = not _SKOPT_AVAILABLE
+        self._pending_value: Optional[Number] = None
+        self._pending_costs: list = []
+
+    def get_id(self) -> str:
+        return self.ID
+
+    def _transition_to_search(self):
+        if not _SKOPT_AVAILABLE:
+            logger.warning(
+                "BayesianOptPrior: scikit-optimize not available, falling back to random search"
+            )
+            self._use_fallback = True
+
+        if isinstance(self.path.type, IntTypeDesc) and self.path.type.bits == 1:
+            self._fallback_targets = [0, 1]
+            self._use_fallback = True
+
+        if not self._use_fallback:
+            try:
+                if isinstance(self.path.type, IntTypeDesc):
+                    min_val, max_val = get_int_limits(self.path.type.bits)
+                    space = [_SkoptInteger(min_val, max_val)]
+                elif isinstance(self.path.type, RealTypeDesc):
+                    min_pos, max_pos = get_real_limit(self.path.type.bits)
+                    max_neg = -max_pos
+                    if max_pos - max_neg == float("inf"):
+                        lo, hi = max_pos - sys.float_info.max, max_pos
+                    else:
+                        lo, hi = max_neg, max_pos
+                    space = [_SkoptReal(lo, hi)]
+                else:
+                    raise ValueError(f"Unsupported path type {self.path.type}")
+                self._optimizer = _SkoptOptimizer(
+                    dimensions=space,
+                    base_estimator="GP",
+                    acq_func="EI",
+                    n_initial_points=max(5, self.budget // 4),
+                    random_state=42,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"BayesianOptPrior: optimizer creation failed ({e}), falling back to random"
+                )
+                self._use_fallback = True
+
+        if self._use_fallback and not self._fallback_targets:
+            if isinstance(self.path.type, IntTypeDesc):
+                min_val, max_val = get_int_limits(self.path.type.bits)
+                int_range = max_val - min_val + 1
+                n = min(self.budget, int_range)
+                self._fallback_targets = (
+                    unique_random_integers(min_val, max_val, n) if n > 0 else []
+                )
+                for v in [min_val, max_val, 0, -1, 1]:
+                    if min_val <= v <= max_val and v not in self._fallback_targets:
+                        self._fallback_targets.append(v)
+            elif isinstance(self.path.type, RealTypeDesc):
+                min_pos, max_pos = get_real_limit(self.path.type.bits)
+                max_neg = -max_pos
+                if max_pos - max_neg == float("inf"):
+                    lo, hi = max_pos - sys.float_info.max, max_pos
+                else:
+                    lo, hi = max_neg, max_pos
+                self._fallback_targets = unique_random_reals(lo, hi, self.budget)
+                for v in [-1.0, 0.0, 1.0]:
+                    if v not in self._fallback_targets:
+                        self._fallback_targets.append(v)
+
+        logger.debug(
+            f"BayesianOptPrior: use_fallback={self._use_fallback}, "
+            f"targets={'%d fallback' % len(self._fallback_targets) if self._use_fallback else 'GP budget=%d' % self.budget}"
+        )
+
+    def is_done(self) -> bool:
+        if self.in_null_phase:
+            if not self.null_prior.is_done():
+                return False
+            if self.null_prior.is_invalid():
+                self._done = True
+            elif (
+                self.skip_immutables
+                and not isinstance(self.path, ResultPath)
+                and self.null_prior.mutated_during_call is False
+            ):
+                logger.info(f"BayesianOptPrior: immutable path suspected, skipping {self.path}")
+                self._done = True
+            else:
+                self._transition_to_search()
+                self.in_null_phase = False
+        if self._done:
+            return True
+        if self._use_fallback:
+            return self._fallback_idx >= len(self._fallback_targets)
+        return self.iterations_done >= self.budget
+
+    def is_invalid(self) -> bool:
+        if self.in_null_phase:
+            return self.null_prior.is_invalid()
+        return False
+
+    def select_next_probe(self) -> PriorProbe:
+        if self.in_null_phase:
+            return self.null_prior.select_next_probe()
+
+        # Tell optimizer about previous probe before asking for next
+        if (
+            self._pending_value is not None
+            and not self._use_fallback
+            and self._optimizer is not None
+        ):
+            valid_costs = [c for c in self._pending_costs if c is not None]
+            cost = sum(valid_costs) / len(valid_costs) if valid_costs else 2.0
+            self._optimizer.tell([self._pending_value], cost)
+        self._pending_value = None
+        self._pending_costs = []
+
+        if self._use_fallback:
+            self.current_value = self._fallback_targets[self._fallback_idx]
+            self._fallback_idx += 1
+        else:
+            next_x = self._optimizer.ask()
+            raw = next_x[0]
+            if isinstance(self.path.type, IntTypeDesc):
+                self.current_value = int(raw)
+            else:
+                self.current_value = float(round(raw, REAL_ACCURACY))
+
+        self.iterations_done += 1
+        self._pending_value = self.current_value
+        return StaticProbe(self.function, self.path, self.get_id(), self.current_value)
+
+    def update(self, probe_result: ProbeResult):
+        super().update(probe_result)
+        if self.in_null_phase:
+            self.null_prior.update(probe_result)
+        else:
+            if self.current_value is not None:
+                success = probe_result.is_exec_success()
+                if self.current_value in self.probed_values:
+                    self.probed_values[self.current_value] &= success
+                else:
+                    self.probed_values[self.current_value] = success
+                if success and probe_result.rel_objective is not None:
+                    rel_obj = probe_result.rel_objective
+                    if self.best_rel_objective is None or rel_obj < self.best_rel_objective:
+                        self.best_rel_objective = rel_obj
+                    self._pending_costs.append(rel_obj)
+                else:
+                    self._pending_costs.append(None)
+
+    def prior_result(self) -> Optional[PriorResult]:
+        if self.in_null_phase and not self.null_prior.is_done():
+            return None
+        any_success = self.best_rel_objective is not None and self.best_rel_objective < 1.0
+        result_entry = _SearchResultEntry(self.ID, self.probed_values, self.best_rel_objective)
+        return PriorResult(self, any_success, [self.null_prior, result_entry])
+
+
+def build_priors(
+    function: Function,
+    path: Path,
+    skip_immutables: bool,
+    strategy: str = "composite",
+    budget: int = 50,
+) -> Prior:
+    if strategy == "random":
+        return RandomSearchPrior(function, path, skip_immutables, budget)
+    if strategy == "bayesian":
+        return BayesianOptPrior(function, path, skip_immutables, budget)
     return CompositePrior(function, path, skip_immutables)

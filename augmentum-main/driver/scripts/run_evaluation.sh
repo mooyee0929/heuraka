@@ -35,6 +35,13 @@ run_driver() {
 #        NO_INSTR="--no_instr"
        SQL_DB="--heuristicDB sqlite:///${WORKING_DIR}/heuristic_data.sqlite"
 
+        # Search strategy: composite (default), random, or bayesian
+        # SEARCH_STRATEGY="--search_strategy composite"
+        # SEARCH_STRATEGY="--search_strategy random"
+        # SEARCH_STRATEGY="--search_strategy bayesian"
+        # Number of probe evaluations per path for random/bayesian (default: 50)
+        # SEARCH_BUDGET="--search_budget 50"
+
 #        BFILTER="--bmark_filter SNU_NPB#bt"
 
         FUN_CACHE="--function_cache ${CFG_DIR}/function_cache_subset.pickle"
@@ -74,7 +81,9 @@ run_driver() {
                 ${VERBOSE}
                 ${KEEP_PROBES}
                 ${INDY_TESTS}
-                ${BFILTER}"
+                ${BFILTER}
+                ${SEARCH_STRATEGY}
+                ${SEARCH_BUDGET}"
 
         echo ${CMD}
         ${CMD}

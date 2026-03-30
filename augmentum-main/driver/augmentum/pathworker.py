@@ -28,10 +28,18 @@ class WorkerResult:
 
 
 class Task:
-    def __init__(self, fn: Function, p: a2p.Path):
+    def __init__(
+        self,
+        fn: Function,
+        p: a2p.Path,
+        search_strategy: str = "composite",
+        search_budget: int = 50,
+    ):
         self.function = fn
         self.path = p
         self.fn_test_cases = set()
+        self.search_strategy = search_strategy
+        self.search_budget = search_budget
 
         self.result: Optional[Union[WorkerResult, Dict[str, WorkerResult]]] = None
 
@@ -130,7 +138,13 @@ class PathWorker(QueueProcWorker):
         self, task: Task, fn_test_cases: Set[str]
     ) -> WorkerResult:
         # create a prior model based on a selected path
-        prior_model = build_priors(task.function, task.path, self.skip_immutables)
+        prior_model = build_priors(
+            task.function,
+            task.path,
+            self.skip_immutables,
+            task.search_strategy,
+            task.search_budget,
+        )
         obj_improvement = False
         while not prior_model.is_done():
             probe = prior_model.select_next_probe()

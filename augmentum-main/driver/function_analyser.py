@@ -231,6 +231,21 @@ def parse_args():
         help="If active, all probed values are stored in the database.",
     )
     parser.add_argument(
+        "--search_strategy",
+        metavar="STRATEGY",
+        type=str,
+        default="composite",
+        choices=["composite", "random", "bayesian"],
+        help="Search strategy for prior evaluation: composite (default), random, or bayesian.",
+    )
+    parser.add_argument(
+        "--search_budget",
+        metavar="N",
+        type=int,
+        default=50,
+        help="Number of probe evaluations per path for random/bayesian strategies (default: 50).",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="Activate verbose program output."
     )
     return parser.parse_args()
@@ -348,6 +363,8 @@ if __name__ == "__main__":
                 record_exec_log=args.record_exec_log,
                 skip_immutables=args.skip_immutables,
                 independent_test_cases=args.independent_test_cases,
+                search_strategy=args.search_strategy,
+                search_budget=args.search_budget,
             )
 
             driver.main_loop()
