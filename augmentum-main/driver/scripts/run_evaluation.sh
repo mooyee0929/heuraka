@@ -33,20 +33,23 @@ run_driver() {
 #        RECORD_EXEC_LOG="--record_exec_log"
 #        DRY_RUN="--dry_run"
 #        NO_INSTR="--no_instr"
-       SQL_DB="--heuristicDB sqlite:///${WORKING_DIR}/heuristic_data.sqlite"
-
         # Search strategy: composite (default), random, or bayesian
         # SEARCH_STRATEGY="--search_strategy composite"
-        # SEARCH_STRATEGY="--search_strategy random"
+        SEARCH_STRATEGY="--search_strategy bayesian"
         # SEARCH_STRATEGY="--search_strategy bayesian"
         # Number of probe evaluations per path for random/bayesian (default: 50)
-        # SEARCH_BUDGET="--search_budget 50"
+        SEARCH_BUDGET="--search_budget 30"
+
+        # Each strategy writes to its own DB so paths are never skipped across runs
+        STRATEGY_NAME=$(echo "${SEARCH_STRATEGY}" | awk '{print $2}')
+        STRATEGY_NAME=${STRATEGY_NAME:-composite}
+       SQL_DB="--heuristicDB sqlite:///${WORKING_DIR}/subset_${STRATEGY_NAME}.sqlite"
 
 #        BFILTER="--bmark_filter SNU_NPB#bt"
 
         FUN_CACHE="--function_cache ${CFG_DIR}/function_cache_subset.pickle"
         BASE_CACHE="--baseline_cache ${CFG_DIR}/baseline_cache.pickle"
-        TARGET_FUNS="--target_function ${CFG_DIR}/target_functions.csv"
+        TARGET_FUNS="--target_function ${CFG_DIR}/target_functions_subset.csv"
 #        TARGET_FILTER="--target_filter ${CFG_DIR}/target_filter.csv"
 
         CHUNK_SIZE="--fn_chunk_size 100000"

@@ -30,7 +30,12 @@ class HeuristicDB:
     PRIOR_TBL = "prior_results"
 
     def __init__(self, url: str):
-        self.engine = db.create_engine(url, connect_args={"timeout": 60})
+        self.engine = db.create_engine(url, connect_args={"timeout": 300})
+        # Enable WAL mode for better concurrent write performance
+        from sqlalchemy import event as _sa_event
+        @_sa_event.listens_for(self.engine, "connect")
+        def _set_wal_mode(dbapi_conn, _):
+            dbapi_conn.execute("PRAGMA journal_mode=WAL")
         self.connection = self.engine.connect()
         self.metadata = MetaData(self.engine)
 
