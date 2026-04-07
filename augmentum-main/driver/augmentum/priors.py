@@ -2370,11 +2370,8 @@ class BayesianOptPrior(Prior):
         self._fallback_targets: list = []
         self._fallback_idx = 0
         self._use_fallback = not _SKOPT_AVAILABLE
-        # Accumulates (value, cost) pairs across all iterations; told to the
-        # GP in bulk at the start of prior_result().
-        self._pending_observations: list = []
         # Tracks the cost(s) reported for the probe currently in flight so
-        # update() can average them before appending to _pending_observations.
+        # update() can average them across test cases before telling the GP.
         self._current_probe_costs: list = []
 
     def get_id(self) -> str:
@@ -2479,9 +2476,27 @@ class BayesianOptPrior(Prior):
             return self.null_prior.is_invalid()
         return False
 
+    def _flush_current_probe_to_gp(self):
+        """Finalise the in-flight probe by averaging its per-test-case costs
+        and telling the GP exactly once. Must be called before issuing the
+        next ask() so the optimizer can update its model."""
+        if self._use_fallback or self._optimizer is None:
+            self._current_probe_costs = []
+            return
+        if self.current_value is None or not self._current_probe_costs:
+            return
+        valid = [c for c in self._current_probe_costs if c is not None]
+        cost = sum(valid) / len(valid) if valid else 1.0
+        self._optimizer.tell([self.current_value], cost)
+        self._current_probe_costs = []
+
     def select_next_probe(self) -> PriorProbe:
         if self.in_null_phase:
             return self.null_prior.select_next_probe()
+
+        # Feed the previous probe's averaged result to the GP before asking
+        # for the next point so the acquisition function is actually informed.
+        self._flush_current_probe_to_gp()
 
         if self._use_fallback:
             self.current_value = self._fallback_targets[self._fallback_idx]
@@ -2502,36 +2517,26 @@ class BayesianOptPrior(Prior):
         super().update(probe_result)
         if self.in_null_phase:
             self.null_prior.update(probe_result)
+            return
+        if self.current_value is None:
+            return
+        success = probe_result.is_exec_success()
+        if self.current_value in self.probed_values:
+            self.probed_values[self.current_value] &= success
         else:
-            if self.current_value is not None:
-                success = probe_result.is_exec_success()
-                if self.current_value in self.probed_values:
-                    self.probed_values[self.current_value] &= success
-                else:
-                    self.probed_values[self.current_value] = success
-                if success and probe_result.rel_objective is not None:
-                    rel_obj = probe_result.rel_objective
-                    if self.best_rel_objective is None or rel_obj < self.best_rel_objective:
-                        self.best_rel_objective = rel_obj
-                    self._current_probe_costs.append(rel_obj)
-                else:
-                    self._current_probe_costs.append(None)
-                # Seal this probe's observation so prior_result() can tell()
-                # it to the GP.  Average valid costs; fall back to 1.0
-                # (baseline) when every run failed — 1.0 is the neutral
-                # signal rather than the arbitrarily punitive 2.0.
-                valid = [c for c in self._current_probe_costs if c is not None]
-                cost = sum(valid) / len(valid) if valid else 1.0
-                self._pending_observations.append((self.current_value, cost))
+            self.probed_values[self.current_value] = success
+        if success and probe_result.rel_objective is not None:
+            rel_obj = probe_result.rel_objective
+            if self.best_rel_objective is None or rel_obj < self.best_rel_objective:
+                self.best_rel_objective = rel_obj
+            self._current_probe_costs.append(rel_obj)
+        else:
+            self._current_probe_costs.append(None)
 
     def prior_result(self) -> Optional[PriorResult]:
-        # Tell the GP about every probe result accumulated so far.
-        # select_next_probe() only asks() — it never calls tell() — so all
-        # observations are fed to the optimizer here in one go.
-        if not self._use_fallback and self._optimizer is not None:
-            for value, cost in self._pending_observations:
-                self._optimizer.tell([value], cost)
-            self._pending_observations = []
+        # Flush the final probe's observation so the GP has seen everything
+        # before the prior is closed out.
+        self._flush_current_probe_to_gp()
         if self.in_null_phase and not self.null_prior.is_done():
             return None
         any_success = self.best_rel_objective is not None and self.best_rel_objective < 1.0
