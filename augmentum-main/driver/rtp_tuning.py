@@ -47,19 +47,16 @@ from augmentum.benchmarks import BenchmarkFactory, ExecutionResult
 from augmentum.function import Function
 from augmentum.objectives import CodeSizeObjective
 from augmentum.probes import (
-    PROBE_LOG_DELIMITER,
+    add_null_check,
     generate_path_code,
-    generate_register_extension_point,
-    get_struct_definitions_from_fntype,
     type_descs_to_cpp_arg_types,
     type_descs_to_cpp_arg_vals,
     type_descs_to_cpp_args,
 )
-from augmentum.paths import ResultPath
-from augmentum.sysProg import InstrumentationScope, ProbeExtension, SysProg
-from augmentum.sysUtils import run_command, try_create_dir
+from augmentum.sysProg import ProbeExtension, SysProg
+from augmentum.sysUtils import try_create_dir
 from augmentum.timer import Timer
-from augmentum.type_descs import IntTypeDesc, RealTypeDesc
+from augmentum.type_descs import StructTypeDesc
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +76,13 @@ class TuningTarget:
 
 @dataclass
 class SelectedTarget:
-    """A target selected for an RTP iteration, with a sampled value."""
+    """A target selected for an RTP iteration, with its prior range info."""
     target: TuningTarget
-    value: float   # sampled value to force
+    value: float       # sampled value (used for logging/DB only)
     value_op: Optional[str]  # None = static, "+" = offset, "*" = scale
+    range_lo: float = 0    # lower bound of the prior value range
+    range_hi: float = 0    # upper bound of the prior value range
+    is_int: bool = True    # whether to sample integers or reals
 
 
 @dataclass
@@ -156,380 +156,81 @@ def sample_value_from_prior(target: TuningTarget) -> SelectedTarget:
 
     if ptype == "Boolean Prior":
         value = random.choice([0, 1])
-        return SelectedTarget(target=target, value=value, value_op=None)
+        return SelectedTarget(target=target, value=value, value_op=None,
+                              range_lo=0, range_hi=1, is_int=True)
 
     elif ptype in ("All Integers Prior", "All Reals Prior"):
         # data format: "val,True#val,True#..."
+        is_int = "Integer" in ptype
         entries = pdata.split("#")
         values = []
         for e in entries:
             parts = e.split(",")
             if len(parts) >= 2 and parts[1] == "True":
                 try:
-                    values.append(int(parts[0]) if ptype == "All Integers Prior"
-                                  else float(parts[0]))
+                    values.append(int(parts[0]) if is_int else float(parts[0]))
                 except ValueError:
                     continue
         if values:
             value = random.choice(values)
+            lo, hi = min(values), max(values)
         else:
-            value = 0
-        return SelectedTarget(target=target, value=value, value_op=None)
+            value, lo, hi = 0, 0, 0
+        return SelectedTarget(target=target, value=value, value_op=None,
+                              range_lo=lo, range_hi=hi, is_int=is_int)
 
     elif ptype in ("Integer Range Prior", "Real Range Prior"):
         # data format: "min,max"
+        is_int = "Integer" in ptype
         parts = pdata.split(",")
-        lo, hi = int(parts[0]), int(parts[1])
-        if ptype == "Real Range Prior":
+        if is_int:
+            lo, hi = int(parts[0]), int(parts[1])
+            value = random.randint(lo, hi)
+        else:
             lo, hi = float(parts[0]), float(parts[1])
             value = random.uniform(lo, hi)
-        else:
-            value = random.randint(lo, hi)
-        return SelectedTarget(target=target, value=value, value_op=None)
+        return SelectedTarget(target=target, value=value, value_op=None,
+                              range_lo=lo, range_hi=hi, is_int=is_int)
 
     elif ptype in ("Integer Offset Prior", "Real Offset Prior"):
         # data format: "theta,phi" → offset in [-theta, +phi]
+        is_int = "Integer" in ptype
         parts = pdata.split(",")
-        theta, phi = int(parts[0]), int(parts[1])
-        if ptype == "Real Offset Prior":
+        if is_int:
+            theta, phi = int(parts[0]), int(parts[1])
+            value = random.randint(-theta, phi)
+        else:
             theta, phi = float(parts[0]), float(parts[1])
             value = random.uniform(-theta, phi)
-        else:
-            value = random.randint(-theta, phi)
-        return SelectedTarget(target=target, value=value, value_op="+")
+        return SelectedTarget(target=target, value=value, value_op="+",
+                              range_lo=-theta, range_hi=phi, is_int=is_int)
 
     elif ptype in ("Integer Scale Prior", "Real Scale Prior"):
-        # data format: "alpha,beta" → scale factor in [1-alpha, 1+beta]
-        # But we pass the raw factor and use "*" op:
-        #   *probed = original_value * factor
+        # data format: "alpha,beta" where alpha = lower bound, beta = upper bound
+        # ScalePrior probes: lower → ScaleProbe(1 - alpha), upper → ScaleProbe(1 + beta)
+        # ScaleProbe uses value_op="*": *probed = original_value * factor
+        # So the valid factor range is [1 - alpha, 1 + beta]
+        is_int = "Integer" in ptype
         parts = pdata.split(",")
-        alpha, beta = int(parts[0]), int(parts[1])
-        # For integer scale, sample an integer multiplier
-        # The prior means: original * (1 ± factor/max), but stored as raw bounds
-        # Actually the scale prior stores alpha, beta as the max offset factors
-        # value_op="*" means: *probed = original_value * value
-        # We need a scale factor. Looking at the data, e.g. "127,127" for i8
-        # means alpha=127, beta=127, so scale ∈ [1-127, 1+127] = [-126, 128]
-        # But that doesn't match. Let me re-read the prior code.
-        # From ScaleProbe: value_op="*", so *probed = original * value
-        # Scale Prior produces values in range (1-alpha, 1+beta) but alpha/beta
-        # are fractions? No — looking at the data "0,41" for i8, the Scale Prior
-        # likely uses integer multipliers directly.
-        # Let me just sample an integer in the range and use "*" op.
-        if ptype == "Real Scale Prior":
-            alpha, beta = float(parts[0]), float(parts[1])
-            # Generate a random real scale factor
-            value = random.uniform(-alpha, beta)
+        if is_int:
+            alpha, beta = int(parts[0]), int(parts[1])
+            lo, hi = 1 - alpha, 1 + beta
+            value = random.randint(lo, hi) if lo <= hi else lo
         else:
-            value = random.randint(-alpha, beta)
-        return SelectedTarget(target=target, value=value, value_op="*")
+            alpha, beta = float(parts[0]), float(parts[1])
+            lo, hi = 1 - alpha, 1 + beta
+            value = random.uniform(lo, hi)
+        return SelectedTarget(target=target, value=value, value_op="*",
+                              range_lo=lo, range_hi=hi, is_int=is_int)
 
     else:
         logger.warning(f"Unknown prior type: {ptype}, using static 0")
-        return SelectedTarget(target=target, value=0, value_op=None)
+        return SelectedTarget(target=target, value=0, value_op=None,
+                              range_lo=0, range_hi=0, is_int=True)
 
 
 # ---------------------------------------------------------------------------
 # Multi-target extension code generation
-# ---------------------------------------------------------------------------
-
-def get_path_type_str(path_str: str) -> str:
-    """Extract the terminal type from a path string like 'A0.D.S2.S0.S0.S3.L.L.T-i8'."""
-    parts = path_str.split(".")
-    for p in reversed(parts):
-        if p.startswith("T-"):
-            type_str = p[2:]  # e.g. "i8", "i16", "i32", "i64", "f32", "f64"
-            if type_str.startswith("i"):
-                bits = int(type_str[1:])
-                return f"int{bits}_t"
-            elif type_str.startswith("f"):
-                bits = int(type_str[1:])
-                return "float" if bits == 32 else "double"
-    return "int64_t"
-
-
-def generate_rtp_extension_code(
-    selected_targets: List[SelectedTarget],
-    sys_prog_src: str,
-    log_file: str,
-) -> str:
-    """
-    Generate a single C++ extension that instruments multiple functions
-    simultaneously. Each function gets its own modified version that applies
-    the randomly sampled value.
-
-    Unlike the per-path probes in the main framework, this generates the
-    modification code inline without needing the full Function/Path objects.
-    We reconstruct the path access code from the path string directly.
-    """
-    # Group targets by (module, function) since each function gets one wrapper
-    from collections import defaultdict
-    fn_targets = defaultdict(list)
-    for st in selected_targets:
-        key = (st.target.module, st.target.function)
-        fn_targets[key].append(st)
-
-    # We use a simplified approach: for each function, pick ONE target path
-    # (the first in the group) and apply its modification. This matches the
-    # paper's approach where each function in the RTP gets one modification.
-    # If multiple paths target the same function, we only use one.
-    unique_targets = []
-    for key, sts in fn_targets.items():
-        unique_targets.append(random.choice(sts))
-
-    # Build the extension code
-    includes = """
-#include <cstdint>
-#include <cstdlib>
-#include <stdexcept>
-#include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <string>
-#include "augmentum.h"
-
-using namespace augmentum;
-
-std::mutex rtp_log_mutex;
-
-void rtp_write_log(const std::string& msg) {
-    const std::lock_guard<std::mutex> lock(rtp_log_mutex);
-    std::filesystem::path outputFile = "%s";
-    std::ofstream out(outputFile.c_str(), std::ios::out | std::ios::app);
-    if (out.good()) {
-        out << msg << std::endl;
-    }
-    out.close();
-}
-""" % log_file
-
-    # Generate one modified function per unique (module, function) target
-    modified_functions = []
-    register_blocks = []
-
-    for idx, st in enumerate(unique_targets):
-        orig_type_name = f"original_t_{idx}"
-        orig_fn_name = f"original_fn_{idx}"
-        mod_fn_name = f"modified_fn_{idx}"
-        path_type = get_path_type_str(st.target.path_str)
-
-        # Determine the value expression
-        if st.value_op is None:
-            # Static: force the value directly
-            value_expr = f"({path_type})({st.value})"
-        elif st.value_op == "+":
-            value_expr = f"original_value + ({path_type})({st.value})"
-        elif st.value_op == "*":
-            value_expr = f"original_value * ({path_type})({st.value})"
-        else:
-            value_expr = f"({path_type})({st.value})"
-
-        # Generate path access code from path string
-        path_access = generate_path_access_code(st.target.path_str, path_type)
-
-        # We need the function signature. Since we don't have the full Function
-        # object, we use a generic approach: the extension point replace mechanism
-        # doesn't need us to know the signature — the Augmentum framework handles
-        # that via FnExtensionPoint. We use the AfterAdvice pattern instead of
-        # replace, which doesn't require knowing the function signature.
-        #
-        # Actually, looking more carefully at the existing code, the replace
-        # approach requires knowing the exact function signature. Instead, let's
-        # use the after-advice pattern which operates on RetVal/ArgVals.
-        #
-        # But the after-advice only runs AFTER the function — it can't change
-        # output before it's used. We need the replace approach.
-        #
-        # For a general solution without function signatures, we use a different
-        # strategy: we generate a "value forcer" that uses AfterAdvice to modify
-        # the return value or argument values after the function call. This is
-        # similar to what the existing probes do but at a higher level.
-        #
-        # Actually, re-reading the augmentum API more carefully:
-        # - replace() replaces the function entirely (needs signature)
-        # - extend_after() runs code after the original (has access to ret/args)
-        #
-        # The AfterAdvice callback has signature:
-        #   void(FnExtensionPoint& pt, RetVal ret_value, ArgVals arg_values)
-        # where RetVal and ArgVals give access to the actual values.
-        #
-        # This is much simpler for multi-function instrumentation! Let's use it.
-
-        # Build the after-advice body based on the path
-        advice_body = generate_advice_body(st, idx, path_type)
-
-        modified_functions.append(f"""
-// Target {idx}: {st.target.module} :: {st.target.function}
-// Path: {st.target.path_str}
-// Prior: {st.target.prior_type} value={st.value} op={st.value_op}
-{advice_body}
-""")
-
-        register_blocks.append(f"""
-        if (pt.get_module_name() == "{sys_prog_src}/{st.target.module}" &&
-            pt.get_name() == "{st.target.function}") {{
-            pt.extend_after(advice_{idx}, advice_id_{idx});
-            rtp_write_log("RTP: registered target {idx} {st.target.function}");
-        }}
-""")
-
-    unregister_blocks = []
-    for idx, st in enumerate(unique_targets):
-        unregister_blocks.append(f"""
-        if (pt.get_module_name() == "{sys_prog_src}/{st.target.module}" &&
-            pt.get_name() == "{st.target.function}") {{
-            pt.remove(advice_id_{idx});
-        }}
-""")
-
-    listener = f"""
-struct RTPListener: Listener {{
-    void on_extension_point_register(FnExtensionPoint& pt) {{
-{"".join(register_blocks)}
-    }}
-
-    void on_extension_point_unregister(FnExtensionPoint& pt) {{
-{"".join(unregister_blocks)}
-    }}
-
-{chr(10).join(f"    AdviceId advice_id_{i} = get_unique_advice_id();" for i in range(len(unique_targets)))}
-}};
-ListenerLifeCycle<RTPListener> rtpListener;
-"""
-
-    return includes + "\n".join(modified_functions) + "\n" + listener
-
-
-def generate_advice_body(st: SelectedTarget, idx: int, path_type: str) -> str:
-    """
-    Generate an AfterAdvice lambda that modifies the appropriate output
-    channel based on the path string.
-
-    Path examples:
-      Z.T-i32        → return value, type i32
-      Z.L.T-i16      → return value, left half (lower 16 bits of 32-bit return)
-      A0.D.S2.T-i32  → arg0 -> deref -> struct elem 2, type i32
-    """
-    path_str = st.target.path_str
-    parts = path_str.split(".")
-    value = st.value
-
-    # Determine value expression
-    if st.value_op is None:
-        val_expr = f"({path_type})({value})"
-        mod_code = f"*ptr = {val_expr};"
-    elif st.value_op == "+":
-        mod_code = f"*ptr = *ptr + ({path_type})({value});"
-    elif st.value_op == "*":
-        mod_code = f"*ptr = *ptr * ({path_type})({value});"
-    else:
-        val_expr = f"({path_type})({value})"
-        mod_code = f"*ptr = {val_expr};"
-
-    # Build pointer access chain from path
-    access_code = build_access_chain(parts, path_type)
-
-    return f"""
-AfterAdvice advice_{idx} = [](FnExtensionPoint& pt, RetVal ret_value, ArgVals arg_values) {{
-    (void)pt;
-    {access_code}
-    if (ptr != nullptr) {{
-        {mod_code}
-    }}
-}};
-"""
-
-
-def build_access_chain(parts: List[str], path_type: str) -> str:
-    """
-    Build C++ code that navigates the path to get a pointer to the target
-    value, using the Augmentum RetVal/ArgVals API.
-
-    RetVal is a void* to the return value storage.
-    ArgVals is a void** array of pointers to each argument.
-    """
-    lines = []
-    current_expr = None
-    in_deref = False
-
-    for i, p in enumerate(parts):
-        if p == "Z":
-            # Return value
-            lines.append("void* _base = ret_value;")
-            current_expr = "_base"
-
-        elif p.startswith("A"):
-            # Argument
-            arg_idx = int(p[1:])
-            lines.append(f"void* _base = arg_values[{arg_idx}];")
-            current_expr = "_base"
-
-        elif p == "D":
-            # Dereference pointer
-            lines.append(f"void* _deref = *(void**){current_expr};")
-            lines.append(f"if (_deref == nullptr) {{ {path_type}* ptr = nullptr; return; }}")
-            current_expr = "_deref"
-
-        elif p.startswith("S"):
-            # Struct element access — we compute byte offset
-            # This is tricky without knowing struct layout. Instead, we cast
-            # to a char array and navigate. But we don't know field offsets.
-            #
-            # Alternative: use the same approach as augmentum probes — cast
-            # to a struct pointer. But we don't have the struct definition.
-            #
-            # The simplest correct approach: since the augmentum instrumentation
-            # wraps the function, arguments are passed by value/pointer. The
-            # struct layout in LLVM IR matches the C++ struct layout that was
-            # used during the original composite search. We need the struct defs.
-            #
-            # For now, use the element index and a generic struct with indexed
-            # fields (e_idx), matching the augmentum convention.
-            elem_idx = int(p[1:])
-            # We need to know struct element sizes. Since we can't determine
-            # this dynamically, we use the approach of casting through char*
-            # and using augmentum's struct naming convention.
-            # This won't work without struct definitions.
-            #
-            # Actually, looking at the original code more carefully, the probes
-            # work because they know the full Function type and generate proper
-            # C++ struct definitions. For the RTP, we need a different approach.
-            #
-            # Let's fall back to the SIMPLEST approach from the paper:
-            # Use the existing single-function infrastructure but combine
-            # multiple extensions by having the listener handle multiple
-            # extension points with REPLACE (not after-advice).
-            #
-            # BUT we need function signatures for replace. This is a fundamental
-            # constraint.
-            #
-            # PRAGMATIC SOLUTION: Load the function objects from the cache and
-            # use the existing probe infrastructure to generate per-function
-            # extension code, then combine them into a single extension.
-            pass
-
-        elif p in ("L", "R"):
-            # Split int left/right
-            # L = lower half, R = upper half
-            pass
-
-        elif p.startswith("T-"):
-            # Terminal — this is the final type, we construct the pointer
-            pass
-
-    # If we reached here with struct access, we need the full Function objects.
-    # Return a placeholder that will be replaced by the proper generation.
-    lines.append(f"{path_type}* ptr = nullptr; // placeholder")
-    return "\n    ".join(lines)
-
-
-def generate_path_access_code(path_str: str, path_type: str) -> str:
-    """Generate C++ code to access a path - placeholder for now."""
-    return f"// path: {path_str}\n"
-
-
-# ---------------------------------------------------------------------------
-# Proper multi-target extension using Function objects
 # ---------------------------------------------------------------------------
 
 def generate_rtp_extension_with_functions(
@@ -606,15 +307,28 @@ def generate_rtp_extension_with_functions(
         args = type_descs_to_cpp_args(fn.type.arg_types)
         probed_type_str = probed_type.get_cpp_type().get_type_string()
 
-        # Determine value expression
-        if st.value_op is None:
-            calc_probed = f"({probed_type_str})({st.value})"
-        elif st.value_op == "+":
-            calc_probed = f"original_value + ({probed_type_str})({st.value})"
-        elif st.value_op == "*":
-            calc_probed = f"original_value * ({probed_type_str})({st.value})"
+        # Generate per-call random value sampling (matches paper: each
+        # function invocation gets a different random value from the prior range)
+        lo, hi = st.range_lo, st.range_hi
+        if st.is_int:
+            # C++ rand() to sample integer in [lo, hi]
+            if lo == hi:
+                rand_expr = f"({probed_type_str})({int(lo)})"
+            else:
+                rand_expr = f"({probed_type_str})({int(lo)} + (rand() % ({int(hi)} - {int(lo)} + 1)))"
         else:
-            calc_probed = f"({probed_type_str})({st.value})"
+            # C++ rand() to sample real in [lo, hi]
+            rand_expr = (f"({probed_type_str})({lo} + "
+                         f"((double)rand() / RAND_MAX) * ({hi} - {lo}))")
+
+        if st.value_op is None:
+            calc_probed = rand_expr
+        elif st.value_op == "+":
+            calc_probed = f"original_value + {rand_expr}"
+        elif st.value_op == "*":
+            calc_probed = f"original_value * {rand_expr}"
+        else:
+            calc_probed = rand_expr
 
         # Build the return logic
         if return_type == "void":
@@ -624,7 +338,6 @@ def generate_rtp_extension_with_functions(
             orig_return = f"{return_type} r = "
 
         # Build probe code (modify the value)
-        from augmentum.probes import add_null_check
         probed_code = f"""
         {path_code}
         {probed_type_str} original_value = *probed;
@@ -674,11 +387,16 @@ typedef {return_type} (*{orig_type})({arg_types_str});
 
     code = f"""
 #include <cstdint>
+#include <cstdlib>
+#include <ctime>
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include "augmentum.h"
+
+// Seed RNG once at load time so per-call sampling is non-deterministic
+static struct _RTPRngInit {{ _RTPRngInit() {{ srand((unsigned)time(nullptr)); }} }} _rtp_rng_init;
 
 using namespace augmentum;
 

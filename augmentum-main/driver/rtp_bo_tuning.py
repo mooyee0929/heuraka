@@ -190,13 +190,15 @@ def parse_prior_range(target: TuningTarget) -> Tuple[str, Any, Any, Optional[str
             return ("int", -theta, phi, "+")
 
     elif ptype in ("Integer Scale Prior", "Real Scale Prior"):
+        # data: "alpha,beta" → factor range [1-alpha, 1+beta]
+        # ScaleProbe: *probed = original_value * factor
         parts = pdata.split(",")
         if "Real" in ptype:
             alpha, beta = float(parts[0]), float(parts[1])
-            return ("real", -alpha, beta, "*")
+            return ("real", 1 - alpha, 1 + beta, "*")
         else:
             alpha, beta = int(parts[0]), int(parts[1])
-            return ("int", -alpha, beta, "*")
+            return ("int", 1 - alpha, 1 + beta, "*")
 
     else:
         return ("int", -128, 127, None)
