@@ -83,11 +83,13 @@ class TuningTarget:
 def load_top_k_targets(composite_db_path: str, top_k: int) -> List[TuningTarget]:
     """
     Load tuning targets ranked by best individual binary size reduction.
-    For each (module, function, path), pick the best prior and keep top-k.
+    Keep only the best path per (module, function) to avoid BO wasting
+    dimensions on multiple paths that map to the same function (only one
+    can be active at a time in the extension).
     """
     conn = sqlite3.connect(composite_db_path)
 
-    # Get best rel_objective per (module, function, path)
+    # Get best rel_objective per (module, function) — one path per function
     cursor = conn.execute("""
         SELECT ph.module, ph.function, ph.path,
                MIN(CAST(pl.rel_objective AS FLOAT)) as best_rel
@@ -100,7 +102,7 @@ def load_top_k_targets(composite_db_path: str, top_k: int) -> List[TuningTarget]
           AND pl.verify = 'SUCCESS'
           AND pl.rel_objective IS NOT NULL
           AND CAST(pl.rel_objective AS FLOAT) < 1.0
-        GROUP BY ph.module, ph.function, ph.path
+        GROUP BY ph.module, ph.function
         ORDER BY best_rel ASC
         LIMIT ?
     """, (top_k,))
@@ -129,7 +131,8 @@ def load_top_k_targets(composite_db_path: str, top_k: int) -> List[TuningTarget]
             ))
 
     conn.close()
-    logger.info(f"Loaded top-{len(targets)} tuning targets (requested {top_k}):")
+    logger.info(f"Loaded top-{len(targets)} tuning targets (requested {top_k}, "
+                f"deduplicated per function):")
     for t in targets:
         logger.info(f"  {t.function}:{t.path_str} rel={t.best_rel_obj:.4f} "
                      f"prior={t.prior_type}")
@@ -258,20 +261,13 @@ def generate_bo_extension(
     functions_by_key: Dict[Tuple[str, str], Function],
     sys_prog_src: str,
 ) -> Optional[str]:
-    """Generate multi-target extension code for the selected configuration."""
-    from collections import defaultdict
-
-    # Deduplicate by (module, function)
-    fn_targets = defaultdict(list)
+    """Generate multi-target extension code for the selected configuration.
+    Targets are already deduplicated per function at load time."""
+    unique_targets = []
     for target, value, value_op in selected:
         key = (target.module, target.function)
-        fn_targets[key].append((target, value, value_op))
-
-    unique_targets = []
-    for key, items in fn_targets.items():
-        item = random.choice(items)
         if key in functions_by_key:
-            unique_targets.append((item, functions_by_key[key]))
+            unique_targets.append(((target, value, value_op), functions_by_key[key]))
         else:
             logger.warning(f"Function {key} not found in cache")
 
@@ -520,14 +516,20 @@ def run_bo_rtp(args):
     logger.info(f"Search space: {len(dimensions)} dimensions "
                 f"({len(targets)} targets × 2)")
 
+    # Auto-scale n_initial_points based on dimensionality:
+    # ~2x the number of dimensions, clamped to [10, iterations//4]
+    n_dims = len(dimensions)
+    n_initial = max(10, min(2 * n_dims, args.iterations // 4))
+
     # Initialize BO optimizer with Random Forest surrogate
     optimizer = Optimizer(
         dimensions=dimensions,
         base_estimator="RF",      # Random Forest — handles mixed spaces well
-        n_initial_points=50,      # Random exploration before fitting model
+        n_initial_points=n_initial,
         acq_func="EI",            # Expected Improvement
         random_state=42,
     )
+    logger.info(f"BO: {n_dims} dims, n_initial_points={n_initial}")
 
     # Load function cache
     with open(args.function_cache, "rb") as f:
@@ -576,12 +578,39 @@ def run_bo_rtp(args):
                 f"functions in {len(target_modules)} modules...")
     opt_program.instrument(target_modules)
 
-    # Resume support
+    # Resume support — reload previous observations into optimizer
     start_iter = get_last_iteration(bo_db_path) + 1
     if start_iter > 0:
-        logger.info(f"Resuming from iteration {start_iter}")
-        # TODO: re-feed previous results to optimizer for true resume
-        # For now, we just skip already-done iterations
+        logger.info(f"Resuming from iteration {start_iter}, "
+                     f"reloading {start_iter} observations...")
+        conn = sqlite3.connect(bo_db_path)
+        for prev_iter in range(start_iter):
+            # Reconstruct the suggestion from bo_configs
+            cur = conn.execute("""
+                SELECT target_idx, enabled, sampled_value
+                FROM bo_configs WHERE iteration = ?
+                ORDER BY target_idx
+            """, (prev_iter,))
+            rows = cur.fetchall()
+            if len(rows) != len(targets):
+                continue  # incomplete record, skip
+            suggestion = []
+            for _, enabled, value in rows:
+                suggestion.append(enabled)
+                suggestion.append(value)
+            # Get the average rel_objective for this iteration
+            cur2 = conn.execute("""
+                SELECT AVG(rel_objective)
+                FROM bo_results
+                WHERE iteration = ? AND verify_result = 'SUCCESS'
+                  AND rel_objective IS NOT NULL
+            """, (prev_iter,))
+            row2 = cur2.fetchone()
+            if row2 and row2[0] is not None:
+                optimizer.tell(suggestion, row2[0])
+            # Skip failed iterations (don't tell optimizer about failures)
+        conn.close()
+        logger.info(f"Reloaded observations into optimizer.")
 
     # BO main loop
     best_rel_obj = float("inf")
@@ -624,14 +653,14 @@ def run_bo_rtp(args):
                 save_bo_result(bo_db_path, iteration, tc_name, num_enabled,
                                config_desc, "EXT_GEN_FAIL", "NA", "NA",
                                None, None, None, None, None)
-            optimizer.tell(suggestion, 2.0)  # penalty
+            # Don't tell optimizer about failures — avoids distorting the model
             continue
 
         # Build extension
         probe_wd = try_create_dir(working_dir / "bo_probe", use_time=True)
         if not probe_wd:
             logger.error("  Failed to create probe directory")
-            optimizer.tell(suggestion, 2.0)
+            # Don't tell optimizer about failures
             continue
 
         try:
@@ -645,7 +674,7 @@ def run_bo_rtp(args):
                                None, None, None, None, None)
             if probe_wd.exists():
                 shutil.rmtree(probe_wd, ignore_errors=True)
-            optimizer.tell(suggestion, 2.0)
+            # Don't tell optimizer about failures
             continue
 
         # Evaluate across all test cases
@@ -712,8 +741,8 @@ def run_bo_rtp(args):
                 best_config = config_desc
                 logger.info(f"  *** New best: avg_rel={avg_rel:.6f} ***")
         else:
-            # All failed — penalize
-            optimizer.tell(suggestion, 2.0)
+            # All failed — don't tell optimizer, avoids distorting the model
+            pass
 
     # Summary
     logger.info("=" * 60)
