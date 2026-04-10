@@ -4,16 +4,16 @@
     },
 
     "tools" : {
-        "compiler_bin"  : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin",
-        "cxx"           : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin/clang++",
-        "llvm-size"     : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin/llvm-size",
+        "compiler_bin"  : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/install/bin",
+        "cxx"           : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/install/bin/clang++",
+        "llvm-size"     : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/install/bin/llvm-size",
 
-        "augmentum_pass"    : "/dev/shm/fsyang/augmentum/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
-        "augmentum_library" : "/dev/shm/fsyang/augmentum/build/extensions/augmentum",
-        "augmentum_headers" : "/n/eecs583a/home/fsyang/Heureka/augmentum-main/extensions/augmentum",
+        "augmentum_pass"    : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
+        "augmentum_library" : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/build/extensions/augmentum",
+        "augmentum_headers" : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/extensions/augmentum",
 
-        "stl_wrapper_lib" : "/dev/shm/fsyang/augmentum/build/tools/stlwrapper/libstlwrapper.so",
-        "fpcmp" : "/n/eecs583a/home/fsyang/Heureka/augmentum-main/driver/bin/fpcmp"
+        "stl_wrapper_lib" : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/build/tools/stlwrapper/libstlwrapper.so",
+        "fpcmp" : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/driver/bin/fpcmp"
     },
 
     "sys_prog" : {
@@ -23,16 +23,16 @@
 
             "llvm" : {
                 "type": "llvm",
-                "build_dir": "/n/eecs583a/home/fsyang/Heureka/llvm10/build/",
-                "src_dir" : "/n/eecs583a/home/fsyang/Heureka/llvm10/llvm-project",
+                "build_dir": "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/build/",
+                "src_dir" : "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/llvm-project",
 
                 "instrument_module": "opt",
 
                 "initial_full_build": false,
 
                 "available_functions_and_types": {
-                    "function_stats": "/n/eecs583a/home/fsyang/Heureka/llvm10/build/function_stats.csv",
-                    "named_struct_stats": "/n/eecs583a/home/fsyang/Heureka/llvm10/build/named_struct_stats.csv"
+                    "function_stats": "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/build/function_stats.csv",
+                    "named_struct_stats": "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/build/named_struct_stats.csv"
                 },
 
                 "compiler_flags": "",
@@ -48,7 +48,7 @@
 
             "POLYBENCH" : {
                 "benchmark_name": "POLYBENCH",
-                "benchmark_dir": "/n/eecs583a/home/fsyang/Heureka/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
+                "benchmark_dir": "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
 
                 "benchmarks" : [
                     "linear-algebra/kernels/2mm",

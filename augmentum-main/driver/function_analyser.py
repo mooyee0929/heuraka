@@ -235,15 +235,15 @@ def parse_args():
         metavar="STRATEGY",
         type=str,
         default="composite",
-        choices=["composite", "random", "bayesian"],
-        help="Search strategy for prior evaluation: composite (default), random, or bayesian.",
+        choices=["composite"],
+        help="Search strategy for prior evaluation: composite (default).",
     )
     parser.add_argument(
         "--search_budget",
         metavar="N",
         type=int,
         default=50,
-        help="Number of probe evaluations per path for random/bayesian strategies (default: 50).",
+        help="Number of probe evaluations per path (default: 50).",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Activate verbose program output."

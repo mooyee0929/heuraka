@@ -35,10 +35,10 @@ run_driver() {
 #        NO_INSTR="--no_instr"
         # Search strategy: composite (default), random, or bayesian
         # SEARCH_STRATEGY="--search_strategy composite"
-        SEARCH_STRATEGY="--search_strategy bayesian"
+        # SEARCH_STRATEGY="--search_strategy bayesian"
         # SEARCH_STRATEGY="--search_strategy bayesian"
         # Number of probe evaluations per path for random/bayesian (default: 50)
-        SEARCH_BUDGET="--search_budget 30"
+        # SEARCH_BUDGET="--search_budget 30"
 
         # Each strategy writes to its own DB so paths are never skipped across runs
         STRATEGY_NAME=$(echo "${SEARCH_STRATEGY}" | awk '{print $2}')

@@ -36,7 +36,8 @@ add_library(
     should_instrument_prior.cpp
     type_serialisation.cpp
 )
-target_link_libraries(augmentum_llvmpass PRIVATE pybind11::embed)
+target_link_libraries(augmentum_llvmpass PRIVATE pybind11::embed
+    /usr/lib/gcc/x86_64-redhat-linux/8/libstdc++fs.a)
 if(APPLE)
     set_target_properties(
         augmentum_llvmpass

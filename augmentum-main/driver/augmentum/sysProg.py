@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class ProbeExtension:
     extension_compile_cmd = (
         "{cxx} -O3 -std=c++17 -fPIC -I{augmentum_inc} -c {extend_path}/{extend_file}.cpp -o {extend_path}/{extend_file}.o && "
-        "{cxx} -shared -fPIC -laugmentum -L{augmentum_lib} -Wl,-rpath,{augmentum_lib} {extend_path}/{extend_file}.o -o {extend_path}/lib{extend_file}.so"
+        "{cxx} -shared -fPIC -laugmentum -L{augmentum_lib} -Wl,-rpath,{augmentum_lib} {extend_path}/{extend_file}.o -o {extend_path}/lib{extend_file}.so /usr/lib/gcc/x86_64-redhat-linux/8/libstdc++fs.a"
     )
     extension_lib_target = "{extend_path}/lib{extend_file}.so"
 

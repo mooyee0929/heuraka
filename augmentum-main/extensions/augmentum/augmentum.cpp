@@ -52,7 +52,7 @@ struct List {
       curr = next;
     }
   }
-  void push_front(Function function, AdviceId id) { head = new ListNode(function, id, head); }
+  void push_front(Function function, AdviceId id) { head = new ListNode<Function>(function, id, head); }
   bool empty() { return head == nullptr; }
   ListIt<Function> begin() { return {head}; }
   ListIt<Function> end() { return {nullptr}; }

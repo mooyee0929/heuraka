@@ -7,7 +7,8 @@
 add_library(augmentum SHARED augmentum.cpp type.cpp internal.cpp python.cpp)
 
 target_include_directories(augmentum PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(augmentum PRIVATE pybind11::embed)
+target_link_libraries(augmentum PRIVATE pybind11::embed
+    /usr/lib/gcc/x86_64-redhat-linux/8/libstdc++fs.a)
 
 set_target_properties(augmentum PROPERTIES PUBLIC_HEADER "augmentum.h;type.h")
 install(
