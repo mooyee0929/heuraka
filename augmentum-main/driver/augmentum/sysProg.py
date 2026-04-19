@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import gc
+import json
 import logging
 import shutil
 from enum import Enum
@@ -258,6 +259,47 @@ class SysProg:
         self.existing_extensions: Dict[str, Set[str]] = dict()
         # indicate if changes to extension points have been applied and a rebuild is required
         self.needs_rebuild = False
+        # Persist instrumentation state across processes so chained jobs can
+        # skip the ~90min LLVM rebuild when targets are unchanged.
+        self._instrumented_marker_p = (
+            self.sys_prog_builder.instrumented_p / ".instrumented_targets.json"
+        )
+        self._load_instrumented_state()
+
+    def _load_instrumented_state(self):
+        if not self._instrumented_marker_p.exists():
+            return
+        sentinel = self.sys_prog_builder.instrumented_p / "bin" / "clang"
+        if not sentinel.exists():
+            return
+        if sentinel.stat().st_mtime > self._instrumented_marker_p.stat().st_mtime:
+            logger.info(
+                "Instrumented build is newer than persisted state — discarding marker."
+            )
+            return
+        try:
+            with self._instrumented_marker_p.open("r") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Failed to load instrumentation marker: {e}")
+            return
+        self.existing_extensions = {m: set(fns) for m, fns in data.items()}
+        n_fns = sum(len(v) for v in self.existing_extensions.values())
+        logger.info(
+            f"Loaded instrumentation state: {n_fns} functions in "
+            f"{len(self.existing_extensions)} modules from {self._instrumented_marker_p}"
+        )
+
+    def _save_instrumented_state(self):
+        try:
+            self._instrumented_marker_p.parent.mkdir(parents=True, exist_ok=True)
+            with self._instrumented_marker_p.open("w") as f:
+                json.dump(
+                    {m: sorted(fns) for m, fns in self.existing_extensions.items()},
+                    f,
+                )
+        except OSError as e:
+            logger.warning(f"Failed to persist instrumentation state: {e}")
 
     def absolute_module_to_relative(self, abs_module: str) -> str:
         return abs_module.replace(str(self.sys_prog_src_dir) + "/", "")
@@ -366,6 +408,12 @@ class SysProg:
 
         self.existing_extensions.clear()
         self.needs_rebuild = True
+        # Marker is about to become stale — remove until apply succeeds.
+        if self._instrumented_marker_p.exists():
+            try:
+                self._instrumented_marker_p.unlink()
+            except OSError:
+                pass
 
     def add_extension_pts(self, module_name: str, function_name: str):
         """
@@ -392,6 +440,7 @@ class SysProg:
                 raise RuntimeError("Instrumenting system program failed.")
 
             self.needs_rebuild = False
+            self._save_instrumented_state()
 
     def bind(
         self, probe: ProbeBase, working_dir: Path, keep_probes: bool = False

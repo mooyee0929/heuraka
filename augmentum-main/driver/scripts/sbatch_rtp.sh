@@ -63,7 +63,7 @@ CMD="${AUGMENTUM_HOME}/driver/rtp_tuning.py
         --composite_db ${COMPOSITE_DB}
         --working_dir ${WORKING_DIR}
         --function_cache ${CFG_DIR}/function_cache.pickle
-        --baseline_cache ${CFG_DIR}/baseline_cache.pickle
+        --baseline_cache /scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/baseline_cache_5bench.pickle
         --iterations ${ITERATIONS}
         --max_targets ${MAX_TARGETS}
         --cpus ${CPUS}

@@ -49,11 +49,11 @@ SKIP_IMM="--skip_immutables"
 #NO_INSTR="--no_instr"
 
 # Search strategy: composite only (random/bayesian removed — use rtp_tuning.py
-# or rtp_bo_tuning.py for multi-target combination search)
+# or bo_tuning.py for multi-target combination search)
 SEARCH_STRATEGY="--search_strategy composite"
 SEARCH_BUDGET="--search_budget 50"
 
-WORKING_DIR=${WORKING_DIR_BASE}_composite
+WORKING_DIR=${WORKING_DIR_BASE}_composite_30
 SQL_DB="--heuristicDB sqlite:///${WORKING_DIR}/subset_composite.sqlite"
 
 #BFILTER="--bmark_filter SNU_NPB#bt"

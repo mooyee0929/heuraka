@@ -7,7 +7,7 @@
 #
 # Examples:
 #   ./submit_chain.sh sbatch_rtp.sh 5 6400 10
-#   ./submit_chain.sh sbatch_rtp_bo.sh 3 2000 10
+#   ./submit_chain.sh sbatch_bo.sh 3 2000 10
 #   ./submit_chain.sh sbatch_evaluation.sh 10
 #
 # Each subsequent job starts after the previous one finishes

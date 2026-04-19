@@ -1,9 +1,15 @@
 # Large build directories
 llvm10/
 working_dir/
+working_dir_*/
+backup_*/
 
 # Large binary/cache files
 augmentum-main/driver/config/function_cache.pickle
 
 # SQLite database
 heuristic_data.sqlite
+
+# SLURM logs
+slurm-*.out
+**/slurm-*.out
