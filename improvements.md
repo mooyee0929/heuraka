@@ -22,7 +22,7 @@ From [report.md](report.md) Finding 3:
 
 ---
 
-## Method 1 — Composite best-value injection (✅ implemented, smoke test running)
+## Method 1 — Composite best-value injection (implemented, smoke test running)
 
 **Goal**: BO at `enable_i = 1, others = 0` should deterministically reproduce
 composite's single-target rel_objective for that function.
@@ -154,7 +154,37 @@ Where:
 
 ---
 
-## Method 5 — Cross-benchmark target ranking (research extension)
+## Method 5 — RTP + `--use_best_value` as a control (not started)
+
+**Goal**: isolate the "value-injection gain" from "search-strategy gain" by running the *simplest* method (pure random) on the deterministic landscape.
+
+### Rationale
+
+After Method 1 lands, we have BO on the deterministic (best-value) landscape but only RTP on the random-value landscape. The missing cell is **RTP + best_value** — needed to separate two questions:
+
+1. *How much does value injection alone buy?* → Compare RTP random-value (0.9534) vs RTP best-value.
+2. *How much does search strategy add on top of value injection?* → Compare RTP best-value vs BO best-value.
+
+Without this cell, we can't attribute BO's 13.1% reduction to its RF surrogate vs to best-value alone.
+
+### Plan (~2h of work)
+
+1. Mirror Method 1 on [rtp_tuning.py](augmentum-main/driver/rtp_tuning.py):
+   - Add `load_tuning_targets_with_best_value` (same shape as `bo_tuning.load_top_k_targets_with_best_value`).
+   - Add `best_value` field to `TuningTarget`.
+   - Update codegen to emit deterministic literal when set.
+   - Add `--use_best_value` CLI and env plumbing in `sbatch_rtp.sh`.
+2. Submit 5-chain with `USE_BEST_VALUE=1` to `working_dir_rtp_bestval/`.
+3. Back up existing `working_dir_rtp/` as `working_dir_rtp_randomval_<date>/` first.
+
+### Expected result
+- RTP best-value should dramatically improve over RTP random-value (same reason BO did).
+- Likely lands between 0.90 and BO's 0.87 — RTP's random subset selection is the weakest search strategy on the clean landscape, but the landscape itself is the dominant factor.
+- If RTP best-value matches BO best-value, then the RF surrogate adds ~no value on this 39-target, subset-of-10 problem — meaning Method 2 (cBO) has less upside than expected.
+
+---
+
+## Method 6 — Cross-benchmark target ranking (research extension)
 
 **Goal**: pick top-k targets that work *across* multiple benchmarks rather
 than per-benchmark.
@@ -177,68 +207,97 @@ data needed.
 
 ---
 
-## Method 6 — Simulated Annealing baseline + best-value port (✅ implemented, chain in flight)
+## Method 7 — Genetic Algorithm baseline (implemented)
 
-**Goal**: add a third search strategy between pure random (RTP) and model-guided (BO); provide a cross-method validation that [report.md](report.md) Finding 4's value-injection gain is not BO-specific.
+**Goal**: add a third comparison point alongside RTP (random search) and BO
+(Bayesian / RF-surrogate). GA is the standard third leg of the
+random / evolutionary / Bayesian comparison in compiler-autotuning literature
+(OpenTuner, MiLePOST GCC, ATOS, COBAYN), so any rigorous head-to-head needs
+it on the table.
 
-### Phase A — SA random-value (done, see [report.md](report.md) Finding 7)
+### Where it sits conceptually
 
-New [sa_tuning.py](augmentum-main/driver/sa_tuning.py) extending RTP with:
-- A *current* multi-target config maintained across iterations.
-- [perturb_config](augmentum-main/driver/sa_tuning.py#L219): three neighbor moves (resample value 50% / swap target 30% / add-remove 20%).
-- Metropolis accept: `exp(−Δ / T)` with geometric cooling (`T_init=1.0`, `cooling_rate=0.995`, `T_min=0.01`).
-- `sa_results.sqlite` schema mirrors RTP's plus `temperature`, `accepted`, `move_type` columns so SA dynamics are analyzable post-hoc.
-- `save_sa_profile` records the candidate config per iter so resume can restore `current_config`/`current_score` exactly.
+| Method | Subset selection | Value selection | Search style |
+|---|---|---|---|
+| RTP | random subset per iter | random per call (or composite-best) | model-free, uninformed |
+| **GA** | tournament + crossover + bit-flip mutation | random per call (or composite-best) | model-free, **informed** |
+| BO  | RF surrogate + EI over k binary dims | random per call (or composite-best) | model-based |
 
-Result: ties RTP to all digits, loses on sample efficiency (Finding 7). Validates that value-sampling randomness, not search strategy, is the 5-bench ceiling.
+GA fills the gap between RTP and BO: it learns from past evaluations
+(unlike RTP) but without fitting an explicit surrogate (unlike BO). If
+GA ≈ BO, the surrogate is not buying much on this problem; if BO ≫ GA,
+the surrogate is doing real work beyond what evolution provides.
 
-### Phase B — SA with `--use_best_value` (implemented, chain queued)
+### Implementation
 
-Mirrors Method 1's approach:
-1. New loader [load_tuning_targets_with_best_value](augmentum-main/driver/sa_tuning.py#L129) groups `probe_log` by `(module, function, path)` and picks the row with minimum `rel_objective < 1.0`; carries `(prior_type, best_value)` through the `TuningTarget` dataclass.
-2. Codegen ([sa_tuning.py:411](augmentum-main/driver/sa_tuning.py#L411)) emits deterministic literal when `best_value` is set.
-3. [perturb_config](augmentum-main/driver/sa_tuning.py#L219) takes a `use_best_value` kwarg: when true, drops the 50% resample-value move (now a no-op) and rebalances to 60% swap / 40% add-remove.
-4. CLI `--use_best_value`, `USE_BEST_VALUE=1` env var in [sbatch_sa.sh](augmentum-main/driver/scripts/sbatch_sa.sh).
+New file [ga_tuning.py](augmentum-main/driver/ga_tuning.py) — hand-rolled
+binary GA, no extra dependencies:
 
-Chain `48400917 → 48400920 → 48400922 → 48400925 → 48400928` is queued against `working_dir_sa/`. 39 eligible paths in the composite DB after the `< 1.0` filter; `max_targets=10` gives a subset-selection space of ~635M combinations.
+- **Search space**: identical to BO — k binary dimensions, one per top-k
+  composite-discovered target. Reuses
+  `bo_tuning.load_top_k_targets[_with_best_value]` and
+  `generate_bo_extension` so the per-iteration *evaluation* (compile +
+  run + verify across all benchmarks, fitness = mean rel_objective with
+  `FAILURE_PENALTY = 1.5` on failure) is byte-identical to BO. Only the
+  optimiser differs.
+- **Operators**:
+  - Initial population: random, but seeded with all-zeros (baseline) and
+    all-ones (full stack) so the GA always observes both extremes (same
+    intent as BO's `n_initial_points` warm-up).
+  - Selection: tournament, k=3.
+  - Crossover: uniform, rate 0.8.
+  - Mutation: per-bit flip, rate `1/k` by default.
+  - Elitism: best 1 individual carried unchanged.
+- **Per-generation deterministic RNG**: `seed = master_seed*1_000_003 + gen`
+  is reseeded at the start of each generation, so post-resume runs
+  reproduce the same proposals regardless of how many individuals were
+  evaluated in a killed mid-generation run.
+- **Resume**: scans `ga_results.sqlite` / `ga_configs` for the largest
+  fully-completed generation, restores its population + fitnesses,
+  rolls forward. Mirrors BO's resume strategy.
+- **Value sampling**: same `--use_best_value` flag as `bo_tuning` —
+  composite-best literal injection (Method 1) or per-call random sampling
+  (paper-RTP behavior). Same `USE_BEST_VALUE=1` env hook in
+  [sbatch_ga.sh](augmentum-main/driver/scripts/sbatch_ga.sh).
 
-### Pass criteria
-- Phase B mean `rel_obj` ≤ 0.90 (clear improvement over random-value SA's 0.9534).
-- If SA approaches BO's 0.8690: confirms value-injection is the dominant lever and local-search operators are competitive with RF surrogate on this landscape.
-- If SA plateaus well above 0.8690: BO's surrogate sample efficiency is the second lever, motivating Method 2 (constraint-aware acq).
+### CLI
 
----
+```
+python ga_tuning.py --config evaluation_config.json \
+    --composite_db sqlite:///path/to/subset_composite.sqlite \
+    --working_dir /path/to/working_dir_ga \
+    --iterations 2000 --top_k 14 --pop_size 20 --cpus 8
+```
 
-## Method 7 — RTP + `--use_best_value` as a control (not started)
+Or via SLURM:
 
-**Goal**: isolate the "value-injection gain" from "search-strategy gain" by running the *simplest* method (pure random) on the deterministic landscape.
+```
+sbatch sbatch_ga.sh 2000 14 20
+USE_BEST_VALUE=1 sbatch sbatch_ga.sh 6400 14 24
+```
 
-### Rationale
+### Pass criteria for the comparison
 
-After Method 6 Phase B lands, we will have three methods × two value modes:
-- {RTP, SA, BO} × {random value, best value}
+For a fair four-way study (RTP, BO, GA, composite ceiling), run all
+three search baselines with **identical** budget (iterations), top_k,
+benchmark set, baseline cache, and `--use_best_value` setting. Compare:
 
-Method 1 gave BO's best-value result. Method 6 Phase A gave SA/RTP's random-value result (identical). Method 6 Phase B will give SA's best-value result. The missing cell is **RTP + best_value** — needed to separate two questions:
+- best `rel_objective` reached
+- iterations to first improvement below 1.0
+- iterations to within 1% of the best ever seen
+- compile-fail rate (proxy for budget waste)
 
-1. *How much does value injection alone buy?* → Compare RTP random-value (0.9534) vs RTP best-value.
-2. *How much does search strategy add on top of value injection?* → Compare RTP best-value vs {SA, BO} best-value.
+### Why this should produce useful signal
 
-Without this cell, we can't attribute BO's 13.1% reduction to its RF surrogate vs to best-value alone.
-
-### Plan (~2h of work)
-
-1. Mirror Method 6 Phase B on [rtp_tuning.py](augmentum-main/driver/rtp_tuning.py):
-   - Add `load_tuning_targets_with_best_value` (copy-paste from `sa_tuning.py`).
-   - Add `best_value` field to `TuningTarget`.
-   - Update codegen to emit deterministic literal when set.
-   - Add `--use_best_value` CLI and env plumbing in `sbatch_rtp.sh`.
-2. Submit 5-chain with `USE_BEST_VALUE=1` to `working_dir_rtp_bestval/`.
-3. Back up existing `working_dir_rtp/` as `working_dir_rtp_randomval_<date>/` first.
-
-### Expected result
-- RTP best-value should dramatically improve over RTP random-value (same reason BO did).
-- Likely lands between 0.90 and BO's 0.87 — RTP's random subset selection is the weakest search strategy on the clean landscape, but the landscape itself is the dominant factor.
-- If RTP best-value matches BO best-value, then the RF surrogate adds ~no value on this 39-target, subset-of-10 problem — meaning Method 2 (cBO) has less upside than expected.
+- GA naturally avoids RTP's pathology of resampling the same poor configs
+  repeatedly — selection pressure concentrates evaluations near the
+  current frontier.
+- GA does *not* suffer from BO's surrogate bias when the response
+  surface is non-stationary (which we suspect from Finding 3 — sharp
+  peaks at specific values, flat elsewhere).
+- Combined with `--use_best_value`, GA on top of composite-best
+  literals essentially performs a structured stacking search and is the
+  most natural opponent to BO + Method 1.
 
 ---
 
@@ -250,9 +309,9 @@ Without this cell, we can't attribute BO's 13.1% reduction to its RF surrogate v
 | 2. Constraint-aware acq (BO) | Pending | ~1 day | High (2× effective budget) | Low — skopt supports custom acq |
 | 3. Lower `top_k` (BO) | Cancelled | None (already wired) | Medium-low (diagnostic only) | None |
 | 4. Tiered value dims (BO) | Future | ~2 days | Medium (escapes composite ceiling) | Medium — search-space blow-up |
-| 5. Cross-benchmark ranking | Future | ~half day | Medium (better target choice for 30-bench) | Low |
-| 6. SA baseline + best-value port | Implemented, Phase B in flight | Done | Medium (3rd data point, validates M1 cross-method) | Low — isolated from BO code |
-| 7. RTP + best-value control | Not started | ~2h | Medium (attribution: value injection vs search strategy) | Low |
+| 5. RTP + best-value control | Not started | ~2h | Medium (attribution: value injection vs search strategy) | Low |
+| 6. Cross-benchmark ranking | Future | ~half day | Medium (better target choice for 30-bench) | Low |
+| 7. GA baseline | Implemented | Done | High (third leg of the comparison; exposes whether BO's surrogate is buying anything beyond evolution) | Low — same eval path as BO, only optimiser changes |
 
 ---
 
@@ -268,3 +327,8 @@ Without this cell, we can't attribute BO's 13.1% reduction to its RF surrogate v
    same 5 benchmarks. Expected ranking: M1+2 ≥ M1 > legacy BO ? RTP ≥ composite.
 5. If M1+2 BO beats RTP on at least 3/5 benchmarks, scale up to the
    30-benchmark composite DB and rerun.
+6. Run GA (Method 7) under the **same** budget / top_k / `--use_best_value`
+   settings as the chosen BO configuration on the 5-bench setup.
+   Plot all three trajectories (RTP, GA, BO) of best-so-far rel_objective
+   vs iteration on a single chart per benchmark, and report the final
+   best per method in a single table. This is the publishable comparison.
