@@ -177,15 +177,82 @@ data needed.
 
 ---
 
+## Method 6 — Simulated Annealing baseline + best-value port (✅ implemented, chain in flight)
+
+**Goal**: add a third search strategy between pure random (RTP) and model-guided (BO); provide a cross-method validation that [report.md](report.md) Finding 4's value-injection gain is not BO-specific.
+
+### Phase A — SA random-value (done, see [report.md](report.md) Finding 7)
+
+New [sa_tuning.py](augmentum-main/driver/sa_tuning.py) extending RTP with:
+- A *current* multi-target config maintained across iterations.
+- [perturb_config](augmentum-main/driver/sa_tuning.py#L219): three neighbor moves (resample value 50% / swap target 30% / add-remove 20%).
+- Metropolis accept: `exp(−Δ / T)` with geometric cooling (`T_init=1.0`, `cooling_rate=0.995`, `T_min=0.01`).
+- `sa_results.sqlite` schema mirrors RTP's plus `temperature`, `accepted`, `move_type` columns so SA dynamics are analyzable post-hoc.
+- `save_sa_profile` records the candidate config per iter so resume can restore `current_config`/`current_score` exactly.
+
+Result: ties RTP to all digits, loses on sample efficiency (Finding 7). Validates that value-sampling randomness, not search strategy, is the 5-bench ceiling.
+
+### Phase B — SA with `--use_best_value` (implemented, chain queued)
+
+Mirrors Method 1's approach:
+1. New loader [load_tuning_targets_with_best_value](augmentum-main/driver/sa_tuning.py#L129) groups `probe_log` by `(module, function, path)` and picks the row with minimum `rel_objective < 1.0`; carries `(prior_type, best_value)` through the `TuningTarget` dataclass.
+2. Codegen ([sa_tuning.py:411](augmentum-main/driver/sa_tuning.py#L411)) emits deterministic literal when `best_value` is set.
+3. [perturb_config](augmentum-main/driver/sa_tuning.py#L219) takes a `use_best_value` kwarg: when true, drops the 50% resample-value move (now a no-op) and rebalances to 60% swap / 40% add-remove.
+4. CLI `--use_best_value`, `USE_BEST_VALUE=1` env var in [sbatch_sa.sh](augmentum-main/driver/scripts/sbatch_sa.sh).
+
+Chain `48400917 → 48400920 → 48400922 → 48400925 → 48400928` is queued against `working_dir_sa/`. 39 eligible paths in the composite DB after the `< 1.0` filter; `max_targets=10` gives a subset-selection space of ~635M combinations.
+
+### Pass criteria
+- Phase B mean `rel_obj` ≤ 0.90 (clear improvement over random-value SA's 0.9534).
+- If SA approaches BO's 0.8690: confirms value-injection is the dominant lever and local-search operators are competitive with RF surrogate on this landscape.
+- If SA plateaus well above 0.8690: BO's surrogate sample efficiency is the second lever, motivating Method 2 (constraint-aware acq).
+
+---
+
+## Method 7 — RTP + `--use_best_value` as a control (not started)
+
+**Goal**: isolate the "value-injection gain" from "search-strategy gain" by running the *simplest* method (pure random) on the deterministic landscape.
+
+### Rationale
+
+After Method 6 Phase B lands, we will have three methods × two value modes:
+- {RTP, SA, BO} × {random value, best value}
+
+Method 1 gave BO's best-value result. Method 6 Phase A gave SA/RTP's random-value result (identical). Method 6 Phase B will give SA's best-value result. The missing cell is **RTP + best_value** — needed to separate two questions:
+
+1. *How much does value injection alone buy?* → Compare RTP random-value (0.9534) vs RTP best-value.
+2. *How much does search strategy add on top of value injection?* → Compare RTP best-value vs {SA, BO} best-value.
+
+Without this cell, we can't attribute BO's 13.1% reduction to its RF surrogate vs to best-value alone.
+
+### Plan (~2h of work)
+
+1. Mirror Method 6 Phase B on [rtp_tuning.py](augmentum-main/driver/rtp_tuning.py):
+   - Add `load_tuning_targets_with_best_value` (copy-paste from `sa_tuning.py`).
+   - Add `best_value` field to `TuningTarget`.
+   - Update codegen to emit deterministic literal when set.
+   - Add `--use_best_value` CLI and env plumbing in `sbatch_rtp.sh`.
+2. Submit 5-chain with `USE_BEST_VALUE=1` to `working_dir_rtp_bestval/`.
+3. Back up existing `working_dir_rtp/` as `working_dir_rtp_randomval_<date>/` first.
+
+### Expected result
+- RTP best-value should dramatically improve over RTP random-value (same reason BO did).
+- Likely lands between 0.90 and BO's 0.87 — RTP's random subset selection is the weakest search strategy on the clean landscape, but the landscape itself is the dominant factor.
+- If RTP best-value matches BO best-value, then the RF surrogate adds ~no value on this 39-target, subset-of-10 problem — meaning Method 2 (cBO) has less upside than expected.
+
+---
+
 ## Decision matrix
 
 | Method | Status | Effort | Expected gain | Risk |
 |---|---|---|---|---|
-| 1. Best-value injection | Implemented, testing | Done | High (recovers composite ceiling) | Low — codegen change is small and reversible via flag |
-| 2. Constraint-aware acq | Pending | ~1 day | High (2× effective budget) | Low — skopt supports custom acq |
-| 3. Lower `top_k` | Cancelled | None (already wired) | Medium-low (diagnostic only) | None |
-| 4. Tiered value dims | Future | ~2 days | Medium (escapes composite ceiling) | Medium — search-space blow-up |
+| 1. Best-value injection (BO) | Implemented, completed | Done | High (recovers composite ceiling) | Low — codegen change is small and reversible via flag |
+| 2. Constraint-aware acq (BO) | Pending | ~1 day | High (2× effective budget) | Low — skopt supports custom acq |
+| 3. Lower `top_k` (BO) | Cancelled | None (already wired) | Medium-low (diagnostic only) | None |
+| 4. Tiered value dims (BO) | Future | ~2 days | Medium (escapes composite ceiling) | Medium — search-space blow-up |
 | 5. Cross-benchmark ranking | Future | ~half day | Medium (better target choice for 30-bench) | Low |
+| 6. SA baseline + best-value port | Implemented, Phase B in flight | Done | Medium (3rd data point, validates M1 cross-method) | Low — isolated from BO code |
+| 7. RTP + best-value control | Not started | ~2h | Medium (attribution: value injection vs search strategy) | Low |
 
 ---
 

@@ -267,6 +267,38 @@ Reproduction: compiling the same `polybench.c` from two differently-named `/tmp/
 - For the canonical 5-bench comparison, all methods should pin to `backup_5bench_20260410/baseline_cache_5bench.pickle`. `sbatch_rtp.sh` and `sbatch_bo.sh` already do so.
 - Long-term fix: add `-ffile-prefix-map=$(pwd)=.` to the polybench build to strip embedded source paths.
 
+## Finding 7: Simulated Annealing (random-value) ties RTP exactly — and loses on sample efficiency
+
+As a third data point between pure random (RTP) and model-guided (BO), I added [sa_tuning.py](augmentum-main/driver/sa_tuning.py) — a Metropolis-accept SA that maintains a *current* multi-target config, perturbs it via neighbor moves (resample value / swap target / add-remove target), accepts with probability `exp(−Δ / T)`, and geometrically cools `T`. Same composite DB, same 5-bench baseline cache, same 6400-iter budget.
+
+### Result (3013 iterations executed before stopping for Method 1 port)
+
+| Benchmark | SA best | RTP best | Δ |
+|---|---:|---:|---:|
+| 2mm    | 0.9544 | 0.9544 | identical |
+| adi    | 0.9575 | 0.9575 | identical |
+| atax   | 0.9480 | 0.9480 | identical |
+| gemm   | 0.9511 | 0.9511 | identical |
+| ludcmp | 0.9562 | 0.9562 | identical |
+| **mean** | **0.9534** (−4.66%) | **0.9534** (−4.66%) | **identical to all digits** |
+
+RTP first hit this plateau at iter 13; SA took until iter 112. SA's directed local search is **strictly worse** than pure random on sample efficiency.
+
+### Root cause: Finding 3's value-randomness, now amplified twice
+
+SA inherits RTP's limitation from Finding 3 (C++-side `rand()` ignores the Python-selected value) and adds two more failure modes:
+
+1. **50% of SA's perturb moves are no-ops.** [perturb_config](augmentum-main/driver/sa_tuning.py#L219) move #1 "resample value for one existing target" replaces `SelectedTarget.value`, but the codegen only reads `st.range_lo/range_hi` and re-samples at C++ call time. Two extensions built from configs that differ only on this move are bit-identical — half the search budget is literally wasted.
+2. **The C++ noise floor breaks Metropolis.** Two evaluations of the *same* Python-side config produce different `rel_obj` because C++ `rand()` reseeds each benchmark run. `Δ = candidate − current` is noise, not gradient. `exp(−Δ/T)` then accepts/rejects roughly at random, with bias toward noisy winners.
+
+Evidence: SA recorded `better`=1169 and `worse_accepted`=690 out of 3013 iters (62% accept rate). Most `better` moves aren't the perturbation finding a real improvement — they are a lucky low-tail roll of `rand()`, which SA then locks in and perturbs away from.
+
+### SA + `--use_best_value` test in flight
+
+The Method 1 argument from BO applies identically here: plumbing composite's deterministic values into codegen removes the C++ randomness *and* collapses the 50% no-op move. Implemented in [sa_tuning.py](augmentum-main/driver/sa_tuning.py) and queued as 5-job SLURM chain `48400917 → 48400920 → 48400922 → 48400925 → 48400928` against `working_dir_sa/`. Prior (random-value) run preserved in `working_dir_sa_randomval_20260421/` for the table above.
+
+Expected outcome: SA with best-value injection should approach BO's −13.1% mean. Below BO if its RF surrogate's sample efficiency matters; above it if the local-search operators happen to fit the subset-stacking landscape better.
+
 ## Status
 
 All 5-bench comparisons complete and mutually consistent against `backup_5bench_20260410/baseline_cache_5bench.pickle`:
@@ -277,5 +309,16 @@ All 5-bench comparisons complete and mutually consistent against `backup_5bench_
 | RTP original | `backup_5bench_20260410/working_dir_rtp/rtp_results.sqlite` | 6400 iter |
 | RTP re-run | `working_dir_rtp/rtp_results.sqlite` | 6400 iter, Finding 5 |
 | BO best_value | `working_dir_bo_bestval/bo_results.sqlite` | 1174 iter; also copied to `backup_5bench_20260410/working_dir_bo_bestval/` |
+| SA random-value | `working_dir_sa_randomval_20260421/sa_results.sqlite` | 3013 iter, Finding 7 |
+| SA best_value | `working_dir_sa/sa_results.sqlite` | 5-chain in flight (jobs 48400917–48400928) |
 
-Currently in progress: 30-benchmark composite search (`working_dir_composite_30/subset_composite.sqlite`, ~1.55M probes across 30 Polybench benchmarks) for the stacking-validation milestone in Finding 4's caveat.
+### Summary ranking (5-bench geomean, lower = better)
+
+| Rank | Method | mean `rel_obj` | size reduction |
+|---:|---|---:|---:|
+| 1 | BO + `use_best_value` | 0.8690 | **−13.10%** |
+| 2 | Composite (single-target oracle) | 0.9427 | −5.73% |
+| 3 | RTP (random value) | 0.9534 | −4.66% |
+| 3 | SA (random value) | 0.9534 | −4.66% |
+
+Currently in progress: 30-benchmark composite search (`working_dir_composite_30/subset_composite.sqlite`, ~1.55M probes across 30 Polybench benchmarks) for the stacking-validation milestone in Finding 4's caveat; and SA best-value chain for cross-method validation of Method 1.

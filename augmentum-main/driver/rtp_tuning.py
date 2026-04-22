@@ -72,6 +72,11 @@ class TuningTarget:
     path_str: str
     prior_type: str   # e.g. "Integer Scale Prior"
     prior_data: str   # e.g. "127,127" or "-128,0"
+    # Composite-discovered best value (set only when --use_best_value is on).
+    # When present, codegen emits a deterministic literal instead of per-call
+    # uniform random sampling from the prior range.
+    best_value: Optional[str] = None
+    best_rel_obj: Optional[float] = None
 
 
 @dataclass
@@ -131,6 +136,70 @@ def load_tuning_targets(composite_db_path: str) -> List[TuningTarget]:
         ))
     conn.close()
     logger.info(f"Loaded {len(targets)} tuning targets from composite DB.")
+    return targets
+
+
+def load_tuning_targets_with_best_value(
+    composite_db_path: str,
+) -> List[TuningTarget]:
+    """
+    For each (module, function, path) that showed improvement in composite,
+    return ONE TuningTarget whose (prior_type, best_value) comes from the
+    specific probe row that achieved the lowest rel_objective. Codegen then
+    emits that deterministic value rather than sampling from a range, aligning
+    RTP's search space with BO --use_best_value and SA --use_best_value.
+    """
+    conn = sqlite3.connect(composite_db_path)
+    cursor = conn.execute("""
+        SELECT pl.module, pl.function, pl.path,
+               MIN(CAST(pl.rel_objective AS FLOAT)) AS best_rel
+        FROM path_heuristics ph
+        JOIN probe_log pl
+          ON (ph.module = pl.module
+              AND ph.function = pl.function
+              AND ph.path = pl.path)
+        WHERE ph.obj_improvement = 1
+          AND pl.verify = 'SUCCESS'
+          AND pl.rel_objective IS NOT NULL
+          AND CAST(pl.rel_objective AS FLOAT) < 1.0
+        GROUP BY pl.module, pl.function, pl.path
+    """)
+    top_paths = cursor.fetchall()
+
+    targets: List[TuningTarget] = []
+    for module, function, path_str, best_rel in top_paths:
+        cur2 = conn.execute("""
+            SELECT prior, value FROM probe_log
+            WHERE module = ? AND function = ? AND path = ?
+              AND verify = 'SUCCESS'
+              AND rel_objective IS NOT NULL
+              AND ABS(CAST(rel_objective AS FLOAT) - ?) < 1e-9
+            LIMIT 1
+        """, (module, function, path_str, best_rel))
+        row = cur2.fetchone()
+        if row is None:
+            continue
+        best_prior_type, best_value = row[0], row[1]
+
+        cur3 = conn.execute("""
+            SELECT data FROM prior_results
+            WHERE module = ? AND function = ? AND path = ? AND prior = ?
+              AND success = 1
+            LIMIT 1
+        """, (module, function, path_str, best_prior_type))
+        row3 = cur3.fetchone()
+        prior_data = row3[0] if row3 else ""
+
+        targets.append(TuningTarget(
+            module=module, function=function, path_str=path_str,
+            prior_type=best_prior_type, prior_data=prior_data,
+            best_value=best_value, best_rel_obj=best_rel,
+        ))
+
+    conn.close()
+    logger.info(
+        f"Loaded {len(targets)} tuning targets with composite best values."
+    )
     return targets
 
 
@@ -307,17 +376,24 @@ def generate_rtp_extension_with_functions(
         args = type_descs_to_cpp_args(fn.type.arg_types)
         probed_type_str = probed_type.get_cpp_type().get_type_string()
 
-        # Generate per-call random value sampling (matches paper: each
-        # function invocation gets a different random value from the prior range)
+        # Value source:
+        # - If target.best_value is set (use_best_value mode), emit a
+        #   deterministic literal so RTP samples from the composite-peak
+        #   landscape (aligned with BO/SA --use_best_value).
+        # - Otherwise fall back to per-call random sampling in [lo, hi]
+        #   (matches paper RTP).
         lo, hi = st.range_lo, st.range_hi
-        if st.is_int:
-            # C++ rand() to sample integer in [lo, hi]
+        if st.target.best_value is not None:
+            if st.is_int:
+                rand_expr = f"({probed_type_str})({int(st.target.best_value)})"
+            else:
+                rand_expr = f"({probed_type_str})({float(st.target.best_value)})"
+        elif st.is_int:
             if lo == hi:
                 rand_expr = f"({probed_type_str})({int(lo)})"
             else:
                 rand_expr = f"({probed_type_str})({int(lo)} + (rand() % ({int(hi)} - {int(lo)} + 1)))"
         else:
-            # C++ rand() to sample real in [lo, hi]
             rand_expr = (f"({probed_type_str})({lo} + "
                          f"((double)rand() / RAND_MAX) * ({hi} - {lo}))")
 
@@ -560,7 +636,10 @@ def run_rtp(args):
 
     # Load tuning targets
     composite_db_file = args.composite_db.replace("sqlite:///", "")
-    targets = load_tuning_targets(composite_db_file)
+    if args.use_best_value:
+        targets = load_tuning_targets_with_best_value(composite_db_file)
+    else:
+        targets = load_tuning_targets(composite_db_file)
     if not targets:
         logger.error("No tuning targets found in composite DB!")
         return
@@ -800,6 +879,12 @@ def parse_args():
     parser.add_argument(
         "--probe_mem_limit", type=int, default=1024,
         help="Memory limit in MB for probe compilation/run"
+    )
+    parser.add_argument(
+        "--use_best_value", action="store_true",
+        help="For each target, use composite's best (prior, value) "
+             "deterministically instead of sampling at runtime. Aligns "
+             "RTP's search space with BO/SA --use_best_value."
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
