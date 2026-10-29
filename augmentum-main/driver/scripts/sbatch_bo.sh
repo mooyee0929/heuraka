@@ -24,8 +24,10 @@ source ${HOME}/miniconda3/etc/profile.d/conda.sh
 conda activate augmentum
 export PATH=${HOME}/miniconda3/envs/augmentum/bin:$PATH
 
-AUGMENTUM_HOME=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main
-WORKING_DIR=${WORKING_DIR:-/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/working_dir_bo}
+: "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/)}"
+
+AUGMENTUM_HOME=${HEURAKA_ROOT}/augmentum-main
+WORKING_DIR=${WORKING_DIR:-${HEURAKA_ROOT}/working_dir_bo}
 CFG_DIR=${AUGMENTUM_HOME}/driver/config
 CONFIG=${AUGMENTUM_HOME}/evaluation_config.json
 
@@ -43,8 +45,8 @@ if [ "${USE_BEST_VALUE:-0}" = "1" ]; then
 fi
 
 # Use 5-bench composite DB and matching baseline cache
-COMPOSITE_DB="sqlite:////scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"
-BASELINE_CACHE="/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/baseline_cache_5bench.pickle"
+COMPOSITE_DB="sqlite:///${HEURAKA_ROOT}/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"
+BASELINE_CACHE="${HEURAKA_ROOT}/backup_5bench_20260410/baseline_cache_5bench.pickle"
 
 mkdir -p ${WORKING_DIR}
 
@@ -84,7 +86,7 @@ echo "Running command:"
 echo ${CMD}
 echo "================================================"
 
-/home/fsyang/miniconda3/envs/augmentum/bin/python ${CMD}
+${HOME}/miniconda3/envs/augmentum/bin/python ${CMD}
 
 EXIT_CODE=$?
 

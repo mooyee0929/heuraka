@@ -3,27 +3,27 @@
         "copy_sysprog": false
     },
     "tools": {
-        "compiler_bin": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/install/bin",
-        "cxx": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/install/bin/clang++",
-        "llvm-size": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/install/bin/llvm-size",
-        "augmentum_pass": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
-        "augmentum_library": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/build/extensions/augmentum",
-        "augmentum_headers": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/extensions/augmentum",
-        "stl_wrapper_lib": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/build/tools/stlwrapper/libstlwrapper.so",
-        "fpcmp": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/driver/bin/fpcmp"
+        "compiler_bin": "/path/to/heuraka/llvm10/install/bin",
+        "cxx": "/path/to/heuraka/llvm10/install/bin/clang++",
+        "llvm-size": "/path/to/heuraka/llvm10/install/bin/llvm-size",
+        "augmentum_pass": "/path/to/heuraka/augmentum-main/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
+        "augmentum_library": "/path/to/heuraka/augmentum-main/build/extensions/augmentum",
+        "augmentum_headers": "/path/to/heuraka/augmentum-main/extensions/augmentum",
+        "stl_wrapper_lib": "/path/to/heuraka/augmentum-main/build/tools/stlwrapper/libstlwrapper.so",
+        "fpcmp": "/path/to/heuraka/augmentum-main/driver/bin/fpcmp"
     },
     "sys_prog": {
         "active": "llvm",
         "available": {
             "llvm": {
                 "type": "llvm",
-                "build_dir": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/build/",
-                "src_dir": "/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/llvm-project",
+                "build_dir": "/path/to/heuraka/llvm10/build/",
+                "src_dir": "/path/to/heuraka/llvm10/llvm-project",
                 "instrument_module": "opt",
                 "initial_full_build": false,
                 "available_functions_and_types": {
-                    "function_stats": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/build/function_stats.csv",
-                    "named_struct_stats": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/llvm10/build/named_struct_stats.csv"
+                    "function_stats": "/path/to/heuraka/llvm10/build/function_stats.csv",
+                    "named_struct_stats": "/path/to/heuraka/llvm10/build/named_struct_stats.csv"
                 },
                 "compiler_flags": "",
                 "linker_flags": ""
@@ -37,7 +37,7 @@
         "available": {
             "POLYBENCH": {
                 "benchmark_name": "POLYBENCH",
-                "benchmark_dir": "/scratch/cse583w26_class_root/cse583w26_class/shresth/heuraka/augmentum-main/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
+                "benchmark_dir": "/path/to/heuraka/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
                 "benchmarks": [
                     "linear-algebra/kernels/2mm",
                     "linear-algebra/kernels/atax",

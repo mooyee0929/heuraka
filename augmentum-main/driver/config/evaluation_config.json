@@ -4,16 +4,16 @@
     },
 
     "tools" : {
-        "compiler_bin"  : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin",
-        "cxx"           : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin/clang++",
-        "llvm-size"     : "/n/eecs583a/home/fsyang/Heureka/llvm10/install/bin/llvm-size",
+        "compiler_bin"  : "/path/to/heuraka/llvm10/install/bin",
+        "cxx"           : "/path/to/heuraka/llvm10/install/bin/clang++",
+        "llvm-size"     : "/path/to/heuraka/llvm10/install/bin/llvm-size",
 
-        "augmentum_pass"    : "/dev/shm/fsyang/augmentum/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
-        "augmentum_library" : "/dev/shm/fsyang/augmentum/build/extensions/augmentum",
-        "augmentum_headers" : "/n/eecs583a/home/fsyang/Heureka/augmentum-main/extensions/augmentum",
+        "augmentum_pass"    : "/path/to/augmentum/build/extensions/augmentum_llvmpass/libaugmentum_llvmpass.so",
+        "augmentum_library" : "/path/to/augmentum/build/extensions/augmentum",
+        "augmentum_headers" : "/path/to/heuraka/augmentum-main/extensions/augmentum",
 
-        "stl_wrapper_lib" : "/dev/shm/fsyang/augmentum/build/tools/stlwrapper/libstlwrapper.so",
-        "fpcmp" : "/n/eecs583a/home/fsyang/Heureka/augmentum-main/driver/bin/fpcmp"
+        "stl_wrapper_lib" : "/path/to/augmentum/build/tools/stlwrapper/libstlwrapper.so",
+        "fpcmp" : "/path/to/heuraka/augmentum-main/driver/bin/fpcmp"
     },
 
     "sys_prog" : {
@@ -23,8 +23,8 @@
 
             "llvm" : {
                 "type": "llvm",
-                "build_dir": "/n/eecs583a/home/fsyang/Heureka/llvm10/build/",
-                "src_dir" : "/n/eecs583a/home/fsyang/Heureka/llvm10/llvm-project",
+                "build_dir": "/path/to/heuraka/llvm10/build/",
+                "src_dir" : "/path/to/heuraka/llvm10/llvm-project",
 
                 "instrument_module": "opt",
 
@@ -43,7 +43,7 @@
 
             "POLYBENCH" : {
                 "benchmark_name": "POLYBENCH",
-                "benchmark_dir": "/n/eecs583a/home/fsyang/Heureka/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
+                "benchmark_dir": "/path/to/heuraka/augmentum-main/benchmarks/polybench-c-4.2.1-beta/",
 
                 "benchmarks" : [
                     "medley/floyd-warshall",
