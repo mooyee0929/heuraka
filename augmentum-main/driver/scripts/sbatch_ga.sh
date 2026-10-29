@@ -23,7 +23,8 @@
 #   - conda location from ${CONDA_BASE} env, then ~/miniconda3,
 #     ~/anaconda3, then the GreatLakes system anaconda at
 #     /sw/pkgs/arc/python3.9-anaconda/2021.11 (or override via env)
-#   - WORKING_DIR uses $USER so each teammate gets their own (override)
+#   - WORKING_DIR and COMPOSITE_DB default to paths under ${HEURAKA_ROOT}
+#     (the heuraka checkout root); override either via env
 # ============================================================
 
 set -uo pipefail
@@ -67,7 +68,12 @@ echo "Using python:     ${PYTHON_BIN}"
 DEFAULT_AUGMENTUM_HOME="$(cd "${SLURM_SUBMIT_DIR:-$(pwd)}/../.." && pwd)"
 AUGMENTUM_HOME="${AUGMENTUM_HOME:-${DEFAULT_AUGMENTUM_HOME}}"
 
-WORKING_DIR=${WORKING_DIR:-/scratch/cse583w26_class_root/cse583w26_class/${USER}/heuraka/working_dir_ga}
+# HEURAKA_ROOT is only needed for the defaults of WORKING_DIR and COMPOSITE_DB.
+if [ -z "${WORKING_DIR:-}" ] || [ -z "${COMPOSITE_DB:-}" ]; then
+    : "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/), or set both WORKING_DIR and COMPOSITE_DB}"
+fi
+
+WORKING_DIR=${WORKING_DIR:-${HEURAKA_ROOT}/working_dir_ga}
 CFG_DIR=${AUGMENTUM_HOME}/driver/config
 CONFIG=${AUGMENTUM_HOME}/evaluation_config.json
 
@@ -85,21 +91,20 @@ if [ "${USE_BEST_VALUE:-0}" = "1" ]; then
     USE_BEST_VALUE_FLAG="--use_best_value"
 fi
 
-# Composite DB: using fsyang's group-readable backup (verified -rw-r--r-- with
-# group cse583w26_class_root). Target discovery is path-agnostic so this
-# can be shared across users.
-COMPOSITE_DB=${COMPOSITE_DB:-"sqlite:////scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"}
+# Composite DB: the group-readable 5-bench backup (verified -rw-r--r--).
+# Target discovery is path-agnostic so this can be shared across users.
+COMPOSITE_DB=${COMPOSITE_DB:-"sqlite:///${HEURAKA_ROOT}/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"}
 
 # Baseline cache: MUST be measured on the running user's tree — absolute paths
 # to benchmark source files get embedded via __FILE__/assert macros so
 # baselines taken on a different directory layout produce systematically
 # biased rel_objective (~350 bytes / 7-8% inflation on polybench-SMALL
-# between fsyang's tree and shresth's tree — confirmed empirically).
+# between two users' trees — confirmed empirically).
 # Regenerate with:
 #   python driver/generate_baseline.py --config evaluation_config.json \
 #       --output driver/config/baseline_cache_<user>_5bench.pickle \
-#       --working_dir /scratch/.../heuraka/working_dir_baseline
-BASELINE_CACHE=${BASELINE_CACHE:-"${AUGMENTUM_HOME}/driver/config/baseline_cache_shresth_5bench.pickle"}
+#       --working_dir ${HEURAKA_ROOT}/working_dir_baseline
+BASELINE_CACHE=${BASELINE_CACHE:-"${AUGMENTUM_HOME}/driver/config/baseline_cache_${USER}_5bench.pickle"}
 
 if [ ! -f "${BASELINE_CACHE}" ]; then
     echo "ERROR: baseline cache not found: ${BASELINE_CACHE}" >&2
@@ -107,7 +112,7 @@ if [ ! -f "${BASELINE_CACHE}" ]; then
     echo "  python ${AUGMENTUM_HOME}/driver/generate_baseline.py \\" >&2
     echo "      --config ${CONFIG} \\" >&2
     echo "      --output ${BASELINE_CACHE} \\" >&2
-    echo "      --working_dir /scratch/.../\${USER}/heuraka/working_dir_baseline" >&2
+    echo "      --working_dir \${HEURAKA_ROOT}/working_dir_baseline" >&2
     exit 1
 fi
 

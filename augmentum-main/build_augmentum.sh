@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=build_augmentum
-#SBATCH --output=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/build_augmentum_%j.out
-#SBATCH --error=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main/build_augmentum_%j.err
+#SBATCH --output=build_augmentum_%j.out
+#SBATCH --error=build_augmentum_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -9,8 +9,11 @@
 #SBATCH --time=1:00:00
 #SBATCH --partition=standard
 
-AUGMENTUM_DIR=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main
-LLVM_CMAKE_DIR=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/llvm10/install/lib/cmake/llvm
+# Submit from augmentum-main/ so the log files above land next to this script.
+: "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/)}"
+
+AUGMENTUM_DIR=${HEURAKA_ROOT}/augmentum-main
+LLVM_CMAKE_DIR=${HEURAKA_ROOT}/llvm10/install/lib/cmake/llvm
 BUILD_DIR=${AUGMENTUM_DIR}/build
 
 echo "Start: $(date)"

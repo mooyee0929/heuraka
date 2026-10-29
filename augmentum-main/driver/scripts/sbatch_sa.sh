@@ -19,10 +19,12 @@ conda activate augmentum
 export PATH=${HOME}/miniconda3/envs/augmentum/bin:$PATH
 
 # ============================================================
-# Configuration — paths pointing to fsyang's copy
+# Configuration — paths relative to HEURAKA_ROOT
 # ============================================================
-AUGMENTUM_HOME=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main
-WORKING_DIR=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/working_dir_sa
+: "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/)}"
+
+AUGMENTUM_HOME=${HEURAKA_ROOT}/augmentum-main
+WORKING_DIR=${HEURAKA_ROOT}/working_dir_sa
 CFG_DIR=${AUGMENTUM_HOME}/driver/config
 CONFIG=${AUGMENTUM_HOME}/evaluation_config.json
 CPUS=${SLURM_CPUS_PER_TASK:-8}
@@ -44,8 +46,8 @@ if [ "${USE_BEST_VALUE:-0}" = "1" ]; then
     USE_BEST_VALUE_FLAG="--use_best_value"
 fi
 
-# Use fsyang's backup composite DB (proven good, avoids copy corruption)
-COMPOSITE_DB="sqlite:////scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"
+# Use the backup composite DB (proven good, avoids copy corruption)
+COMPOSITE_DB="sqlite:///${HEURAKA_ROOT}/backup_5bench_20260410/working_dir_composite/subset_composite.sqlite"
 
 # ============================================================
 # Create working directory
@@ -68,7 +70,7 @@ CMD="${AUGMENTUM_HOME}/driver/sa_tuning.py
         --composite_db ${COMPOSITE_DB}
         --working_dir ${WORKING_DIR}
         --function_cache ${CFG_DIR}/function_cache.pickle
-        --baseline_cache /scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/backup_5bench_20260410/baseline_cache_5bench.pickle
+        --baseline_cache ${HEURAKA_ROOT}/backup_5bench_20260410/baseline_cache_5bench.pickle
         --iterations ${ITERATIONS}
         --max_targets ${MAX_TARGETS}
         --cpus ${CPUS}

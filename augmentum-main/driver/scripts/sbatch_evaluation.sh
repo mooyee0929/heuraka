@@ -29,8 +29,10 @@ export PATH=${HOME}/miniconda3/envs/augmentum/bin:$PATH
 # ============================================================
 # Configuration
 # ============================================================
-AUGMENTUM_HOME=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/augmentum-main
-WORKING_DIR_BASE=/scratch/cse583w26_class_root/cse583w26_class/fsyang/heuraka/working_dir
+: "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/)}"
+
+AUGMENTUM_HOME=${HEURAKA_ROOT}/augmentum-main
+WORKING_DIR_BASE=${HEURAKA_ROOT}/working_dir
 CFG_DIR=${AUGMENTUM_HOME}/driver/config
 CONFIG=${AUGMENTUM_HOME}/evaluation_config.json
 
@@ -128,7 +130,7 @@ echo "Running command:"
 echo ${CMD}
 echo "================================================"
 
-/home/fsyang/miniconda3/envs/augmentum/bin/python ${CMD}
+${HOME}/miniconda3/envs/augmentum/bin/python ${CMD}
 
 EXIT_CODE=$?
 

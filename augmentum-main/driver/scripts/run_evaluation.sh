@@ -7,7 +7,9 @@
 # run single job or multiple parallel jobs
 # use pkill driver to cancel all jobs
 
-AUGMENTUM_HOME=/n/eecs583a/home/fsyang/Heureka/augmentum-main
+: "${HEURAKA_ROOT:?set HEURAKA_ROOT to the absolute path of the heuraka checkout (the directory containing augmentum-main/ and llvm10/)}"
+
+AUGMENTUM_HOME=${HEURAKA_ROOT}/augmentum-main
 
 # configure number of jobs
 JOBS=1
@@ -22,7 +24,7 @@ fi
 run_driver() {
         JOB_ID=$1
         CPUS=$2
-        WORKING_DIR=/n/eecs583a/home/fsyang/Heureka/working_dir
+        WORKING_DIR=${HEURAKA_ROOT}/working_dir
         CFG_DIR=${AUGMENTUM_HOME}/driver/config
         CONFIG=${AUGMENTUM_HOME}/evaluation_config.json
 
@@ -105,4 +107,4 @@ else
         echo "Running single job ..."
         run_driver 0 ${CPU_PER_JOB}
 fi
-#pkill -u fsyang -f function_analyser.py
+#pkill -u ${USER} -f function_analyser.py
